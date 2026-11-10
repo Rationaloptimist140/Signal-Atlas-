@@ -1,0 +1,81 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  background: #080b14;
+  color: #f8fafc;
+  font-feature-settings: "cv11", "ss01";
+  -webkit-font-smoothing: antialiased;
+}
+
+/* A single restrained ambient gradient behind the whole application */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    radial-gradient(900px 480px at 85% -10%, rgba(139, 92, 246, 0.11), transparent 60%),
+    radial-gradient(700px 420px at 0% 0%, rgba(34, 211, 238, 0.06), transparent 55%);
+}
+
+@layer base {
+  * {
+    border-color: rgba(148, 163, 184, 0.14);
+  }
+  ::selection {
+    background: rgba(139, 92, 246, 0.4);
+  }
+  :focus-visible {
+    outline: 2px solid #8b5cf6;
+    outline-offset: 2px;
+    border-radius: 6px;
+  }
+}
+
+@layer utilities {
+  .num {
+    font-family: var(--font-geist-mono), ui-monospace, monospace;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.01em;
+  }
+  .scrollbar-thin {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(148, 163, 184, 0.25) transparent;
+  }
+  .text-balance {
+    text-wrap: balance;
+  }
+}
+
+/* React Flow theme */
+.react-flow {
+  --xy-background-color: transparent;
+  --xy-edge-stroke: rgba(148, 163, 184, 0.28);
+  --xy-controls-button-background-color: #141c2d;
+  --xy-controls-button-background-color-hover: #1a2438;
+  --xy-controls-button-color: #94a3b8;
+  --xy-controls-button-border-color: rgba(148, 163, 184, 0.14);
+}
+.react-flow__attribution {
+  display: none;
+}
+
+.recharts-cartesian-grid line {
+  stroke: rgba(148, 163, 184, 0.1);
+}
+.recharts-text {
+  fill: #64748b;
+  font-size: 11px;
+}
