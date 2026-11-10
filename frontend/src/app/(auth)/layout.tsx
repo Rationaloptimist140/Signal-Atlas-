@@ -13,7 +13,7 @@ export default function AuthLayout({ children }: { children: ReactNode }) {
     <div className="grid min-h-screen lg:grid-cols-[1.1fr_1fr]">
       <aside className="relative hidden overflow-hidden border-r border-line bg-surface lg:flex lg:flex-col lg:justify-between lg:p-12">
         <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(600px_400px_at_20%_10%,rgba(139,92,246,0.18),transparent_60%),radial-gradient(500px_400px_at_90%_90%,rgba(34,211,238,0.1),transparent_60%)]" />
-        <div className="relative"><Logo /></div>
+        <div className="relative"><Logo href="/" /></div>
         <div className="relative max-w-lg">
           <p className="text-2xs font-semibold uppercase tracking-[0.2em] text-primary-bright">Open-source technology intelligence</p>
           <h1 className="mt-4 text-4xl font-semibold leading-tight tracking-tight text-ink text-balance">Discover technology. Identify opportunities. See what comes next.</h1>
@@ -30,7 +30,7 @@ export default function AuthLayout({ children }: { children: ReactNode }) {
       </aside>
       <main className="flex items-center justify-center px-6 py-12">
         <div className="w-full max-w-sm">
-          <div className="mb-8 lg:hidden"><Logo /></div>
+          <div className="mb-8 lg:hidden"><Logo href="/" /></div>
           {children}
         </div>
       </main>

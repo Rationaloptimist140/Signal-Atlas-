@@ -1,7 +1,7 @@
 "use client";
 
 import {
-  Activity, Bell, Binoculars, BookMarked, Boxes, ChevronsLeft, Code2, FileText, FlaskConical, GitBranch, LayoutDashboard, LogOut, Menu, Radar, Radio,
+  Activity, Bell, Binoculars, BookMarked, Boxes, ChevronsLeft, Code2, FileText, FlaskConical, GitBranch, LayoutDashboard, LogOut, MailWarning, Menu, Radar, Radio,
   Search, Settings, Swords, Users, X,
 } from "lucide-react";
 import Link from "next/link";
@@ -28,9 +28,9 @@ export const NAV_ITEMS = [
   { href: "/settings", label: "Settings", icon: Settings },
 ] as const;
 
-export function Logo({ collapsed }: { collapsed?: boolean }) {
+export function Logo({ collapsed, href = "/overview" }: { collapsed?: boolean; href?: string }) {
   return (
-    <Link href="/overview" className="flex items-center gap-2.5" aria-label="Signal Atlas home">
+    <Link href={href} className="flex items-center gap-2.5" aria-label="Signal Atlas home">
       <span className="relative flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-primary/40 bg-gradient-to-br from-primary/30 to-accent/20 shadow-glow">
         <Binoculars className="h-4 w-4 text-white" />
       </span>
@@ -262,6 +262,38 @@ function ProvenanceBanner() {
   );
 }
 
+export function VerifyBanner() {
+  const { me } = useSession();
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<{ tone: "ok" | "error"; text: string } | null>(null);
+  if (!me || me.user.email_verified || !me.email.verification_required) return null;
+
+  async function resend() {
+    setBusy(true);
+    try {
+      const response = await api<{ message: string; status: string }>("/auth/verify-email/request", { method: "POST" });
+      setResult({ tone: response.status === "failed" || response.status === "not_configured" ? "error" : "ok", text: response.message });
+    } catch (err) {
+      setResult({ tone: "error", text: err instanceof Error ? err.message : "Could not send the email." });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div role="status" className="flex flex-wrap items-center gap-x-3 gap-y-1.5 border-b border-accent/25 bg-accent-soft px-4 py-2 text-xs text-accent sm:px-6">
+      <MailWarning className="h-3.5 w-3.5 shrink-0" />
+      <span className="font-semibold uppercase tracking-wider">Verify your email</span>
+      <span className="text-ink/80">
+        Confirm {me.user.email} to generate reports, create API keys and run live GitHub requests.
+        {!me.email.delivery_configured && " Email delivery is not configured on this instance yet, so no message can be sent."}
+      </span>
+      {result ? <span className={result.tone === "ok" ? "text-success" : "text-warning"}>{result.text}</span>
+        : <button onClick={resend} disabled={busy} className="font-medium underline underline-offset-2 hover:text-ink disabled:opacity-50">{busy ? "Sending…" : "Resend verification email"}</button>}
+    </div>
+  );
+}
+
 export function AppShell({ children }: { children: ReactNode }) {
   const [collapsed, setCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
@@ -287,6 +319,7 @@ export function AppShell({ children }: { children: ReactNode }) {
             <UserMenu />
           </div>
         </header>
+        <VerifyBanner />
         <ProvenanceBanner />
         <main id="main" className="mx-auto w-full min-w-0 max-w-[1500px] flex-1 overflow-x-clip px-4 py-6 sm:px-6 lg:px-8">{children}</main>
         <footer className="border-t border-line px-6 py-4 text-2xs text-ink-faint">

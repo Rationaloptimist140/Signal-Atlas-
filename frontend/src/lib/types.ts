@@ -5,14 +5,15 @@ export type Basis = "verified_fact" | "calculated_metric" | "interpretation" | "
 export type Page<T> = { items: T[]; total: number; page: number; page_size: number };
 
 export type Plan = {
-  key: string; name: string; price_gbp_month: number | null; tagline: string;
+  key: string; name: string; price_gbp_month: number | null; price_gbp_year: number | null; purchasable: boolean; tagline: string;
   watchlist_items: number | null; competitors: number | null; reports_per_month: number | null; live_syncs_per_month: number | null;
   api_keys: number | null; api_requests_per_month: number | null; api_rate_per_minute: number;
   ai_enrichment: boolean; custom_scoring_weights: boolean; seats: number | null;
 };
 
 export type Me = {
-  user: { id: number; email: string; full_name: string; job_title: string | null; has_password: boolean; created_at: string };
+  user: { id: number; email: string; full_name: string; job_title: string | null; has_password: boolean; created_at: string; email_verified: boolean };
+  email: { verification_required: boolean; delivery_configured: boolean };
   organisation: { id: number; name: string; slug: string };
   role: "owner" | "admin" | "analyst" | "viewer";
   plan: Plan;
@@ -108,3 +109,18 @@ export type WatchlistEntry = {
   available: boolean; title: string; subtitle: string | null; link: string | null; data_source?: DataSource; stars?: number; score?: number;
 };
 export type Watchlist = { id: number; name: string; description: string | null; created_at: string; items: WatchlistEntry[] };
+
+export type BillingState = {
+  provider: string; checkout_available: boolean; webhooks_configured: boolean; test_mode: boolean | null; payments_live: boolean;
+  self_serve_plan_change: boolean; currency: string; grace_days: number; message: string;
+};
+export type PlanCatalogue = { plans: Plan[]; intervals: string[]; billing: BillingState; note: string };
+export type SubscriptionInfo = {
+  plan: Plan; subscribed_plan: Plan; status: "pending" | "active" | "past_due" | "cancelled" | "expired"; billing_interval: "month" | "year" | null; provider: string;
+  current_period_start: string | null; current_period_end: string | null; cancel_at_period_end: boolean; cancelled_at: string | null; grace_until: string | null;
+  manageable: boolean; usage: { key: string; label: string; used: number; limit: number | null }[]; billing: BillingState;
+};
+export type PaymentRow = {
+  id: number; amount_minor: number; refunded_minor: number; currency: string; status: string; plan: string | null; billing_interval: string | null;
+  description: string | null; receipt_url: string | null; paid_at: string | null; created_at: string;
+};

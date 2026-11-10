@@ -6,17 +6,16 @@ import { Suspense, useEffect, useState, type FormEvent } from "react";
 import { useSWRConfig } from "swr";
 import { api, errorMessage } from "@/lib/api";
 import { useApi, useSession } from "@/lib/session";
-import type { Plan } from "@/lib/types";
 import { cn, formatDate, formatNumber, timeAgo } from "@/lib/utils";
 import { validatePassword, validateRequired, validateWeights } from "@/lib/validation";
-import { Badge, Button, Card, CardHeader, ErrorState, Field, Input, LoadingRows, Notice, PageHeader, ProgressBar, Tabs, Td, Th } from "@/components/ui";
+import { BillingTab } from "@/components/billing-tab";
+import { Badge, Button, Card, CardHeader, ErrorState, Field, Input, LoadingRows, Notice, PageHeader, Tabs, Td, Th } from "@/components/ui";
 
 type TabKey = "profile" | "integrations" | "scoring" | "billing" | "workspace" | "data";
 type Feedback = { tone: "success" | "danger" | "accent" | "warning"; text: string } | null;
 type OrgData = { organisation: { name: string; slug: string; created_at: string }; members: { id: number; email: string; full_name: string; role: string }[];
   integrations: { key: string; name: string; configured: boolean; detail: string; env: string[] }[] };
 type Scoring = { weights: Record<string, number>; defaults: Record<string, number>; labels: Record<string, string>; custom: boolean; editable: boolean };
-type Subscription = { plan: Plan; status: string; usage: { key: string; label: string; used: number; limit: number | null }[]; billing: { payments_live: boolean; self_serve_plan_change: boolean; message: string } };
 type SystemStatus = { jobs: Record<string, number>; live_repositories: number; demo_repositories: number; jobs_inline: boolean; recent_jobs: { id: number; job_type: string; status: string; attempts: number; finished_at: string | null; last_error: string | null }[] };
 
 const GITHUB_MESSAGES: Record<string, Feedback> = {
@@ -164,7 +163,7 @@ function ScoringTab() {
   return (
     <Card><CardHeader title="Business potential scoring weights" description="Metric scores never change; weights only change how they combine into the 0–100 total for your organisation." action={data.custom && <Badge tone="primary">Custom</Badge>} />
       <div className="space-y-4 p-5">
-        {!data.editable && <Notice tone="warning" title="Professional plan feature.">Custom weights are available from the Professional plan. The default weights below are in use.</Notice>}
+        {!data.editable && <Notice tone="warning" title="Business plan feature.">Custom weights are available from the Business plan. The default weights below are in use.</Notice>}
         {msg && <Notice tone={msg.tone}>{msg.text}</Notice>}
         <ul className="space-y-3">{Object.keys(data.defaults).map((key) => (
           <li key={key} className="grid grid-cols-[1fr_auto] items-center gap-4 sm:grid-cols-[220px_1fr_88px]">
@@ -178,63 +177,6 @@ function ScoringTab() {
           {editable && <div className="flex gap-2"><Button onClick={() => save(true)} disabled={busy || !data.custom}>Reset to defaults</Button><Button variant="primary" onClick={() => save()} loading={busy}>Save weights</Button></div>}
         </div>
       </div></Card>
-  );
-}
-
-function BillingTab() {
-  const { me, refresh, isAdmin } = useSession();
-  const { data: plans } = useApi<{ plans: Plan[]; note: string }>("/billing/plans");
-  const { data: sub, error, mutate } = useApi<Subscription>("/billing/subscription");
-  const [msg, setMsg] = useState<Feedback>(null);
-  const [busy, setBusy] = useState<string | null>(null);
-  const limit = (value: number | null) => (value === null ? "Unlimited" : formatNumber(value));
-
-  async function choose(plan: string) {
-    setBusy(plan);
-    setMsg(null);
-    try {
-      await api("/billing/checkout", { method: "POST", body: { plan } });
-      await Promise.all([mutate(), refresh()]);
-      setMsg({ tone: "success", text: "Plan changed (development mode — no payment taken)." });
-    } catch (err) {
-      setMsg({ tone: "accent", text: errorMessage(err) });
-    } finally {
-      setBusy(null);
-    }
-  }
-  return (
-    <div className="space-y-6">
-      <Notice tone="warning" title="Payments are not live.">{sub?.billing.message ?? "Pricing is a proposal under validation."} {plans?.note}</Notice>
-      {msg && <Notice tone={msg.tone}>{msg.text}</Notice>}
-      {error && <Card><ErrorState message={errorMessage(error)} onRetry={() => mutate()} /></Card>}
-      {sub && (
-        <Card><CardHeader title={`Usage on the ${sub.plan.name} plan`} description={`Subscription ${sub.status}`} />
-          <ul className="grid gap-5 p-5 sm:grid-cols-2 lg:grid-cols-3">{sub.usage.map((u) => (
-            <li key={u.key}><div className="mb-1.5 flex justify-between text-xs"><span className="text-ink-muted">{u.label}</span><span className="num text-ink">{formatNumber(u.used)} / {limit(u.limit)}</span></div>
-              <ProgressBar value={u.used} max={u.limit ?? Math.max(u.used, 1) * 4} tone={u.limit !== null && u.used >= u.limit ? "danger" : "primary"} /></li>))}</ul></Card>
-      )}
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">{plans?.plans.map((plan) => {
-        const current = me?.plan.key === plan.key;
-        return (
-          <Card key={plan.key} className={cn("flex flex-col p-5", current && "border-primary/60 shadow-glow")}>
-            <div className="flex items-center justify-between"><h3 className="text-sm font-semibold text-ink">{plan.name}</h3>{current && <Badge tone="primary">Current</Badge>}</div>
-            <p className="num mt-3 text-2xl font-semibold text-ink">{plan.price_gbp_month === null ? "Custom" : `£${plan.price_gbp_month}`}{plan.price_gbp_month !== null && <span className="text-xs font-normal text-ink-faint"> / month</span>}</p>
-            <p className="mt-1 text-xs text-ink-muted">{plan.tagline}</p>
-            <ul className="mt-4 flex-1 space-y-1.5 text-xs text-ink-muted">
-              <li><span className="num text-ink">{limit(plan.reports_per_month)}</span> reports / month</li><li><span className="num text-ink">{limit(plan.watchlist_items)}</span> saved items</li>
-              <li><span className="num text-ink">{limit(plan.competitors)}</span> competitors</li><li><span className="num text-ink">{limit(plan.live_syncs_per_month)}</span> live GitHub requests / month</li>
-              <li>{plan.api_requests_per_month === 0 ? "No API access" : <><span className="num text-ink">{limit(plan.api_requests_per_month)}</span> API requests / month</>}</li>
-              <li className={plan.ai_enrichment ? "text-ink" : ""}>{plan.ai_enrichment ? "AI-enriched reports" : "Rules-engine reports"}</li>
-              <li className={plan.custom_scoring_weights ? "text-ink" : ""}>{plan.custom_scoring_weights ? "Custom scoring weights" : "Default scoring weights"}</li>
-            </ul>
-            {!current && plan.key !== "enterprise" && me?.role === "owner" && (
-              <Button className="mt-4" variant={sub?.billing.self_serve_plan_change ? "primary" : "secondary"} onClick={() => choose(plan.key)} loading={busy === plan.key}>
-                {sub?.billing.self_serve_plan_change ? `Switch to ${plan.name}` : `Request ${plan.name}`}</Button>)}
-            {plan.key === "enterprise" && !current && <p className="mt-4 text-xs text-ink-faint">Contact us for custom limits.</p>}
-          </Card>);
-      })}</div>
-      {!isAdmin && <Notice>Only the workspace owner can change the plan.</Notice>}
-    </div>
   );
 }
 
@@ -341,7 +283,7 @@ function SettingsContent() {
       {tab === "profile" && <ProfileTab />}
       {tab === "integrations" && <IntegrationsTab githubParam={githubParam} />}
       {tab === "scoring" && <ScoringTab />}
-      {tab === "billing" && <BillingTab />}
+      {tab === "billing" && <BillingTab checkoutParam={params.get("checkout")} initialPlan={params.get("plan")} initialInterval={params.get("interval") === "year" ? "year" : "month"} />}
       {tab === "workspace" && <WorkspaceTab />}
       {tab === "data" && <DataTab />}
     </div>
