@@ -7,7 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
-from app.deps import Principal, get_principal, require_analyst
+from app.deps import Principal, get_principal, require_analyst, require_verified_analyst
 from app.models import IntelligenceReport, Opportunity, OpportunityScore, Repository
 from app.routers.common import SourceParam, paginate, resolve_source, source_query
 from app.schemas import OpportunityOut, Page, ReportGenerateIn, ReportOut
@@ -103,7 +103,7 @@ async def get_opportunity(opportunity_id: int, principal: Principal = Depends(ge
 
 
 @router.post("/reports/generate", response_model=ReportOut, status_code=201, tags=["reports"], summary="Generate an intelligence report")
-async def generate(body: ReportGenerateIn, principal: Principal = Depends(require_analyst), db: AsyncSession = Depends(get_db)) -> ReportOut:
+async def generate(body: ReportGenerateIn, principal: Principal = Depends(require_verified_analyst), db: AsyncSession = Depends(get_db)) -> ReportOut:
     plan = await enforce_monthly_limit(db, principal.organisation_id, "reports", "reports_per_month", "reports")
     try:
         report = await generate_report(db, principal.organisation_id, principal.user_id, body.report_type, body.subject_id, body.repository_ids,

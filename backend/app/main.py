@@ -17,7 +17,17 @@ from app.config import get_settings
 from app.database import get_sessionmaker
 from app.logging_config import configure_logging, get_logger
 from app.models import Repository
-from app.routers import account, auth, competitors, dashboard, developers, opportunities, repositories, trends
+from app.routers import (
+    account,
+    auth,
+    billing,
+    competitors,
+    dashboard,
+    developers,
+    opportunities,
+    repositories,
+    trends,
+)
 
 log = get_logger("api")
 
@@ -101,7 +111,7 @@ def create_app() -> FastAPI:
             return JSONResponse(status_code=503, content={"status": "unavailable", "database": False})
         return {"status": "ready", "database": True}
 
-    for router in (auth.router, repositories.router, developers.router, trends.router, opportunities.router, competitors.router, dashboard.router, account.router):
+    for router in (auth.router, repositories.router, developers.router, trends.router, opportunities.router, competitors.router, dashboard.router, account.router, billing.router):
         app.include_router(router, prefix="/api/v1")
     return app
 

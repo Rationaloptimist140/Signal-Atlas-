@@ -96,6 +96,7 @@ class User(Base):
     full_name: Mapped[str] = mapped_column(String(200), default="")
     job_title: Mapped[str | None] = mapped_column(String(200))
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    email_verified_at: Mapped[dt.datetime | None] = mapped_column(UTCDateTime)
     failed_logins: Mapped[int] = mapped_column(Integer, default=0)
     locked_until: Mapped[dt.datetime | None] = mapped_column(UTCDateTime)
     created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime, default=utcnow)
@@ -129,6 +130,22 @@ class UserSession(Base):
     created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime, default=utcnow)
     expires_at: Mapped[dt.datetime] = mapped_column(UTCDateTime)
     revoked_at: Mapped[dt.datetime | None] = mapped_column(UTCDateTime)
+
+
+class EmailToken(Base):
+    """Single-use e-mail verification and password-reset tokens. Only a SHA-256 hash is stored."""
+
+    __tablename__ = "email_tokens"
+    __table_args__ = (CheckConstraint("purpose in ('verify_email','password_reset')", name="ck_email_token_purpose"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    purpose: Mapped[str] = mapped_column(String(20))
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    expires_at: Mapped[dt.datetime] = mapped_column(UTCDateTime)
+    used_at: Mapped[dt.datetime | None] = mapped_column(UTCDateTime)
+    ip_address: Mapped[str | None] = mapped_column(String(64))
+    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime, default=utcnow)
 
 
 class GitHubAccount(Base):
@@ -519,21 +536,71 @@ class ApiKey(Base):
 
 
 class Subscription(Base):
+    """One subscription per organisation. Provider-neutral: Stripe today, others later."""
+
     __tablename__ = "subscriptions"
     __table_args__ = (
         CheckConstraint("plan in ('free','pro','professional','business','enterprise')", name="ck_subscription_plan"),
+        CheckConstraint("status in ('pending','active','past_due','cancelled','expired')", name="ck_subscription_status"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     organisation_id: Mapped[int] = mapped_column(ForeignKey("organisations.id", ondelete="CASCADE"), unique=True)
     plan: Mapped[str] = mapped_column(String(20), default="free")
     status: Mapped[str] = mapped_column(String(20), default="active")
+    billing_interval: Mapped[str | None] = mapped_column(String(10))  # month | year
     provider: Mapped[str] = mapped_column(String(20), default="manual")
-    provider_customer_id: Mapped[str | None] = mapped_column(String(120))
-    provider_subscription_id: Mapped[str | None] = mapped_column(String(120))
+    provider_customer_id: Mapped[str | None] = mapped_column(String(120), index=True)
+    provider_subscription_id: Mapped[str | None] = mapped_column(String(120), index=True)
+    current_period_start: Mapped[dt.datetime | None] = mapped_column(UTCDateTime)
     current_period_end: Mapped[dt.datetime | None] = mapped_column(UTCDateTime)
+    cancel_at_period_end: Mapped[bool] = mapped_column(Boolean, default=False)
+    cancelled_at: Mapped[dt.datetime | None] = mapped_column(UTCDateTime)
+    grace_until: Mapped[dt.datetime | None] = mapped_column(UTCDateTime)
+    pending_plan: Mapped[str | None] = mapped_column(String(20))  # plan being purchased while checkout is open
     created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime, default=utcnow)
     updated_at: Mapped[dt.datetime] = mapped_column(UTCDateTime, default=utcnow, onupdate=utcnow)
+
+
+class Payment(Base):
+    """Payment history from the billing provider (one row per invoice)."""
+
+    __tablename__ = "payments"
+    __table_args__ = (
+        UniqueConstraint("provider", "provider_payment_id", name="uq_payment_provider_ref"),
+        Index("ix_payments_org_created", "organisation_id", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    organisation_id: Mapped[int] = mapped_column(ForeignKey("organisations.id", ondelete="CASCADE"))
+    provider: Mapped[str] = mapped_column(String(20))
+    provider_payment_id: Mapped[str] = mapped_column(String(120))  # invoice id
+    provider_charge_id: Mapped[str | None] = mapped_column(String(120), index=True)
+    amount_minor: Mapped[int] = mapped_column(Integer)  # pence
+    refunded_minor: Mapped[int] = mapped_column(Integer, default=0)
+    currency: Mapped[str] = mapped_column(String(3))
+    status: Mapped[str] = mapped_column(String(20))  # succeeded | failed | refunded | partially_refunded
+    plan: Mapped[str | None] = mapped_column(String(20))
+    billing_interval: Mapped[str | None] = mapped_column(String(10))
+    description: Mapped[str | None] = mapped_column(String(300))
+    receipt_url: Mapped[str | None] = mapped_column(String(500))
+    paid_at: Mapped[dt.datetime | None] = mapped_column(UTCDateTime)
+    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime, default=utcnow)
+
+
+class BillingEvent(Base):
+    """Processed provider webhook events - the idempotency ledger."""
+
+    __tablename__ = "billing_events"
+    __table_args__ = (UniqueConstraint("provider", "event_id", name="uq_billing_event"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    provider: Mapped[str] = mapped_column(String(20))
+    event_id: Mapped[str] = mapped_column(String(120))
+    event_type: Mapped[str] = mapped_column(String(80))
+    organisation_id: Mapped[int | None] = mapped_column(ForeignKey("organisations.id", ondelete="SET NULL"))
+    outcome: Mapped[str] = mapped_column(String(40), default="processed")
+    received_at: Mapped[dt.datetime] = mapped_column(UTCDateTime, default=utcnow)
 
 
 class UsageRecord(Base):

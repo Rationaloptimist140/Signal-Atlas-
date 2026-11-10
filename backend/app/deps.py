@@ -135,3 +135,29 @@ async def require_platform_admin(principal: Principal = Depends(require_admin)) 
     if settings.app_env == "production" and (principal.user is None or principal.user.email.lower() not in settings.platform_admins):
         raise HTTPException(status_code=403, detail={"code": "platform_admin_required", "message": "This action is restricted to platform administrators."})
     return principal
+
+
+async def require_verified(principal: Principal = Depends(get_principal)) -> Principal:
+    """Soft gate: browsing is open, but premium and live operations need a verified e-mail address."""
+    settings = get_settings()
+    if settings.email_verification_required and principal.via == "session" and principal.user is not None and principal.user.email_verified_at is None:
+        raise HTTPException(status_code=403, detail={
+            "code": "email_verification_required",
+            "message": "Verify your email address to use this feature." if settings.email_delivery_configured or settings.app_env != "production"
+            else "This feature needs a verified email address, but email delivery is not configured on this instance yet.",
+            "email_delivery_configured": settings.email_delivery_configured,
+        })
+    return principal
+
+
+def verified_role(minimum: Role, *, session_only: bool = False):
+    """Role check plus the verified-email gate."""
+    role_dep = require_role(minimum, session_only=session_only)
+
+    async def dependency(principal: Principal = Depends(role_dep)) -> Principal:
+        return await require_verified(principal)
+    return dependency
+
+
+require_verified_analyst = verified_role(Role.ANALYST)
+require_verified_admin = verified_role(Role.ADMIN, session_only=True)

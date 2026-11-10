@@ -1,6 +1,7 @@
 """Repository Intelligence (Engine 1)."""
 
 import datetime as dt
+import time
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -8,7 +9,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
-from app.deps import Principal, get_principal, require_analyst
+from app.deps import Principal, get_principal, require_verified_analyst
 from app.models import (
     ChangeEvent,
     CommitActivity,
@@ -53,6 +54,9 @@ from app.services.usage import audit, enforce_monthly_limit, record_usage
 from app.taxonomy import CATEGORIES
 
 router = APIRouter(prefix="/repositories", tags=["repositories"])
+
+SEARCH_CACHE_SECONDS = 300
+_SEARCH_CACHE: dict[tuple, tuple] = {}  # (query, sort, per_page) -> (monotonic time, repository ids, total, fetched_at, authenticated)
 
 SORTS = {
     "stars": Repository.stars.desc(),
@@ -148,9 +152,16 @@ async def github_search(
     q: str = Query(..., min_length=2, max_length=200),
     sort: Literal["stars", "updated", "best_match"] = "stars",
     per_page: int = Query(20, ge=1, le=50),
-    principal: Principal = Depends(require_analyst),
+    principal: Principal = Depends(require_verified_analyst),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
+    cache_key = (q.strip().lower(), sort, per_page)
+    cached = _SEARCH_CACHE.get(cache_key)
+    if cached and time.monotonic() - cached[0] < SEARCH_CACHE_SECONDS:
+        # Identical search within five minutes: serve the stored results instead of spending GitHub quota (not metered).
+        repos = list((await db.scalars(select(Repository).where(Repository.id.in_(cached[1])).order_by(Repository.stars.desc()))).all())
+        items = await repo_list_items(db, repos, await get_weights(db, principal.organisation_id))
+        return {"items": items, "total_on_github": cached[2], "data_source": DataSource.LIVE.value, "fetched_at": cached[3], "authenticated_request": cached[4], "cached": True}
     await enforce_monthly_limit(db, principal.organisation_id, "live_syncs", "live_syncs_per_month", "live GitHub requests")
     async with await jobs.github_client_for(db, principal.user_id) as client:
         try:
@@ -164,11 +175,15 @@ async def github_search(
     await db.commit()
     await jobs.enqueue_and_maybe_run(db, "recompute_intelligence", {"repository_ids": [r.id for r in repos]}, dedupe_key=None)
     items = await repo_list_items(db, repos, await get_weights(db, principal.organisation_id))
-    return {"items": items, "total_on_github": total, "data_source": DataSource.LIVE.value, "fetched_at": utcnow().isoformat(), "authenticated_request": authenticated}
+    fetched_at = utcnow().isoformat()
+    if len(_SEARCH_CACHE) > 500:
+        _SEARCH_CACHE.clear()
+    _SEARCH_CACHE[cache_key] = (time.monotonic(), [r.id for r in repos], total, fetched_at, authenticated)
+    return {"items": items, "total_on_github": total, "data_source": DataSource.LIVE.value, "fetched_at": fetched_at, "authenticated_request": authenticated, "cached": False}
 
 
 @router.post("/track", response_model=RepositoryOut, status_code=201, summary="Track a public repository by owner/name")
-async def track(body: TrackRepositoryIn, principal: Principal = Depends(require_analyst), db: AsyncSession = Depends(get_db)) -> Repository:
+async def track(body: TrackRepositoryIn, principal: Principal = Depends(require_verified_analyst), db: AsyncSession = Depends(get_db)) -> Repository:
     existing = await db.scalar(select(Repository).where(func.lower(Repository.full_name) == body.full_name.lower()))
     if existing:
         return existing
@@ -316,7 +331,7 @@ async def score(repository_id: int, principal: Principal = Depends(get_principal
 
 
 @router.post("/{repository_id}/sync", status_code=202, summary="Queue a full sync from GitHub")
-async def sync(repository_id: int, principal: Principal = Depends(require_analyst), db: AsyncSession = Depends(get_db)) -> dict:
+async def sync(repository_id: int, principal: Principal = Depends(require_verified_analyst), db: AsyncSession = Depends(get_db)) -> dict:
     repo = await get_repo_or_404(db, repository_id)
     if repo.data_source == DataSource.DEMO.value:
         raise HTTPException(status_code=400, detail={"code": "demo_fixture", "message": "Demo fixtures are fictional and cannot be synced with GitHub."})
