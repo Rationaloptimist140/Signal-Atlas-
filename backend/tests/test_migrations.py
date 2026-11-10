@@ -24,7 +24,7 @@ def test_upgrade_head_creates_every_model_table_and_has_no_drift(tmp_path):
         tables = {row[0] for row in conn.execute("select name from sqlite_master where type='table'")}
         version = conn.execute("select version_num from alembic_version").fetchone()[0]
     assert tables - {"alembic_version"} == set(Base.metadata.tables)
-    assert version == "0001"
+    assert version == "0002"
     check = _alembic(["check"], url)
     assert check.returncode == 0, check.stdout + check.stderr  # models and migrations are in sync
 
@@ -37,7 +37,7 @@ def test_upgrade_head_creates_every_model_table_and_has_no_drift(tmp_path):
 
 def test_tenant_tables_carry_organisation_foreign_keys():
     tenant_tables = ["memberships", "sessions", "scoring_configs", "competitors", "watchlists", "watchlist_items", "intelligence_reports",
-                     "api_keys", "subscriptions", "usage_records", "notifications"]
+                     "api_keys", "subscriptions", "usage_records", "notifications", "payments"]
     for name in tenant_tables:
         table = Base.metadata.tables[name]
         column = table.c.organisation_id

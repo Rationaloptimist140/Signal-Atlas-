@@ -1,46 +1,30 @@
 # Tasks
 
-## Needs your input (external accounts, cost or scope)
+## External configuration still required (your accounts; none of this was done)
 
-- [ ] **Deploy to Railway** — follow DEPLOYMENT.md. Creates billable services; confirm before proceeding.
-- [ ] **GitHub token** — create a read-only public-repository token and set `GITHUB_TOKEN`.
-- [ ] **GitHub OAuth app** — create it and set `GITHUB_OAUTH_CLIENT_ID` / `GITHUB_OAUTH_CLIENT_SECRET` (callback URL in DEPLOYMENT.md).
-- [ ] **LLM provider** — choose Anthropic or an OpenAI-compatible endpoint and set the key (usage is billed by the provider).
-- [ ] **Email provider** — needed for verification, password reset and invitations.
-- [ ] **Legal** — privacy notice, terms, Legitimate Interests Assessment for developer profiles.
-- [ ] **Pricing validation** — confirm plan prices and limits with prospective customers before enabling payments.
+- [ ] **GitHub Workflows permission** — grant the GitHub App used for automated pushes the *Workflows* permission, or paste `.github/workflows/ci.yml` (full text in the pull request description) through GitHub's web editor. Without it CI does not run.
+- [ ] **Resend** — create an account (free tier), verify a sending domain by adding its DNS records, then set `EMAIL_PROVIDER=resend`, `RESEND_API_KEY`, `EMAIL_FROM`. `mail.flanuer.com` has no mail DNS records today (see PROGRESS.md).
+- [ ] **Stripe test mode** — set `BILLING_PROVIDER=stripe`, `STRIPE_SECRET_KEY` (`sk_test_...`), `STRIPE_WEBHOOK_SECRET`; add the webhook endpoint and enable the customer portal (steps in DEPLOYMENT.md); then run one test checkout end to end.
+- [ ] **GitHub token** — read-only public-repository token as `GITHUB_TOKEN`.
+- [ ] **GitHub OAuth app** — `GITHUB_OAUTH_CLIENT_ID` / `GITHUB_OAUTH_CLIENT_SECRET`.
+- [ ] **LLM provider** — optional; `LLM_PROVIDER` plus a key.
+- [ ] **Railway deployment** — awaiting separate confirmation; creates billable services.
+- [ ] **Legal** — privacy notice, terms, Legitimate Interests Assessment for developer profiles; decide on a licence or proprietary notice.
+
+## Before live payments
+
+- [ ] Run the Stripe integration against Stripe's test environment and fix anything the mocks did not show
+- [ ] Validate prices and limits with prospective customers
+- [ ] Decide VAT / tax handling (Stripe Tax is not configured)
+- [ ] Only then set `ALLOW_LIVE_PAYMENTS=true` with a live key
 
 ## Next engineering tasks
 
-### Launch readiness
-- [ ] Email verification, password reset, teammate invitations
-- [ ] Committed Playwright end-to-end suite and ESLint configuration
-- [ ] Nonce-based Content-Security-Policy
-- [ ] Organisation switcher for users in several workspaces
-- [ ] Multi-factor authentication
-
-### Data depth
-- [ ] Dependencies from GitHub's SBOM endpoint (nested manifests, lockfiles)
-- [ ] Package-registry adoption data (npm, PyPI, crates.io downloads)
-- [ ] Backfill star history from stargazer timestamps for watched repositories
-- [ ] Dependents ("used by") counts
-- [ ] GitHub App installation for higher per-installation quotas
-- [ ] Monitor a competitor's whole GitHub organisation, not only attached repositories
-
-### Intelligence quality
-- [ ] Backtest the scoring model against known commercial outcomes; publish calibration
-- [ ] LLM-assisted classification with human-reviewable overrides
-- [ ] Release-note summarisation and feature extraction for competitor reports
-- [ ] External demand signals (search interest, job postings, funding) from permitted sources
-- [ ] Typed response models for composite endpoints (dashboard, graph) in OpenAPI
-
-### Commercialisation
-- [ ] Stripe provider behind `BILLING_PROVIDER` (checkout, webhook, entitlement sync)
-- [ ] Usage dashboards and limit warning notifications
-- [ ] Scheduled email digests of signals and competitor changes
-- [ ] Report export to PDF and Markdown
-
-### Operations
-- [ ] Redis-backed cache for dashboard aggregates
-- [ ] Error tracking and metrics (Sentry / OpenTelemetry)
-- [ ] Admin console for platform administrators
+- [ ] In-app plan upgrade/downgrade for existing subscribers (currently via the Stripe portal)
+- [ ] Billing emails (receipt, payment failed, cancellation confirmation)
+- [ ] Teammate invitations and seat limits
+- [ ] Committed Playwright end-to-end suite
+- [ ] Nonce-based Content-Security-Policy; multi-factor authentication
+- [ ] Dependencies from GitHub's SBOM endpoint; package-registry adoption data
+- [ ] Backtest the scoring model against known outcomes
+- [ ] Error tracking and metrics

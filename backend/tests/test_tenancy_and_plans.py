@@ -167,7 +167,7 @@ async def test_api_key_rate_limit(client, demo_data):
 async def test_custom_scoring_weights_gated_and_applied(client, other_client, demo_data, db):
     gated = await client.put("/api/v1/settings/scoring", json={"weights": {}})
     assert gated.status_code == 402 and gated.json()["error"]["feature"] == "custom_scoring_weights"
-    await client.post("/api/v1/billing/checkout", json={"plan": "professional"})
+    await client.post("/api/v1/billing/checkout", json={"plan": "business"})
     invalid = await client.put("/api/v1/settings/scoring", json={"weights": {"development_momentum": 100}})
     assert invalid.status_code == 422 and invalid.json()["error"]["code"] == "invalid_weights"
 
@@ -189,15 +189,17 @@ async def test_custom_scoring_weights_gated_and_applied(client, other_client, de
 
 async def test_billing_is_not_live_and_usage_is_reported(client, anon, settings, monkeypatch):
     plans = (await anon.get("/api/v1/billing/plans")).json()
-    assert [(p["key"], p["price_gbp_month"]) for p in plans["plans"]] == [("free", 0), ("pro", 19), ("professional", 49), ("business", 149), ("enterprise", None)]
-    assert plans["payments_live"] is False
+    assert [(p["key"], p["price_gbp_month"], p["price_gbp_year"]) for p in plans["plans"]] == [("free", 0, 0), ("pro", 19, 190), ("business", 49, 490), ("enterprise", None, None)]
+    assert plans["billing"]["payments_live"] is False and plans["billing"]["checkout_available"] is False
     sub = (await client.get("/api/v1/billing/subscription")).json()
-    assert sub["plan"]["key"] == "free" and sub["billing"]["payments_live"] is False
+    assert sub["plan"]["key"] == "free" and sub["status"] == "active" and sub["billing"]["payments_live"] is False
     assert {u["key"] for u in sub["usage"]} == {"reports", "live_syncs", "api_requests", "watchlist_items", "competitors"}
+    assert all(u["used"] == 0 for u in sub["usage"])  # real counters, never simulated figures
     monkeypatch.setattr(settings, "allow_self_serve_plan_change", False)
     blocked = await client.post("/api/v1/billing/checkout", json={"plan": "pro"})
-    assert blocked.status_code == 501 and blocked.json()["error"]["code"] == "billing_not_configured"
+    assert blocked.status_code == 503 and blocked.json()["error"]["code"] == "billing_not_configured"
     assert (await client.post("/api/v1/billing/checkout", json={"plan": "enterprise"})).status_code == 422
+    assert (await client.post("/api/v1/billing/checkout", json={"plan": "pro", "interval": "weekly"})).status_code == 422
 
 
 async def test_platform_tools_restricted_in_production(client, settings, monkeypatch):

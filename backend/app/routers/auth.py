@@ -27,7 +27,15 @@ from app.models import (
     Watchlist,
     utcnow,
 )
-from app.schemas import ChangePasswordIn, LoginIn, ProfileUpdateIn, RegisterIn
+from app.schemas import (
+    ChangePasswordIn,
+    LoginIn,
+    PasswordResetConfirmIn,
+    PasswordResetRequestIn,
+    ProfileUpdateIn,
+    RegisterIn,
+    TokenIn,
+)
 from app.security import (
     decrypt_secret,
     encrypt_secret,
@@ -39,6 +47,7 @@ from app.security import (
     unsign,
     verify_password,
 )
+from app.services import account_tokens
 from app.services.usage import audit, org_plan
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -101,7 +110,8 @@ async def me_payload(db: AsyncSession, user: User, organisation_id: int, role: s
     account = await db.scalar(select(GitHubAccount).where(GitHubAccount.user_id == user.id))
     return {
         "user": {"id": user.id, "email": user.email, "full_name": user.full_name, "job_title": user.job_title, "has_password": bool(user.password_hash),
-                 "created_at": user.created_at.isoformat()},
+                 "created_at": user.created_at.isoformat(), "email_verified": user.email_verified_at is not None},
+        "email": {"verification_required": get_settings().email_verification_required, "delivery_configured": get_settings().email_delivery_configured},
         "organisation": {"id": org.id, "name": org.name, "slug": org.slug},
         "role": role,
         "plan": plan.to_dict(),
@@ -116,6 +126,7 @@ async def me_payload(db: AsyncSession, user: User, organisation_id: int, role: s
 async def providers() -> dict:
     settings = get_settings()
     return {"email_password": True, "github_oauth": settings.github_oauth_configured, "registration_open": settings.allow_registration,
+            "email_delivery": settings.email_delivery_configured,
             "github_scopes": settings.github_oauth_scopes if settings.github_oauth_configured else None}
 
 
@@ -133,8 +144,9 @@ async def register(body: RegisterIn, request: Request, response: Response, db: A
     user, org = await create_user_with_workspace(db, email, body.full_name.strip(), hash_password(body.password), body.organisation_name)
     session = await create_session(db, user, org.id, request, response)
     await audit(db, "user.registered", organisation_id=org.id, user_id=user.id, ip=client_ip(request))
+    delivery = await account_tokens.send_verification(db, user, client_ip(request))
     await db.commit()
-    return await me_payload(db, user, org.id, Role.OWNER.value, session.csrf_token)
+    return dict(await me_payload(db, user, org.id, Role.OWNER.value, session.csrf_token), verification_email=delivery)
 
 
 @router.post("/login", summary="Sign in with email and password")
@@ -204,6 +216,86 @@ async def change_password(body: ChangePasswordIn, request: Request, principal: P
     await db.execute(update(UserSession).where(UserSession.user_id == user.id, UserSession.id != principal.session.id, UserSession.revoked_at.is_(None)).values(revoked_at=utcnow()))
     await audit(db, "user.password_changed", organisation_id=principal.organisation_id, user_id=user.id, ip=client_ip(request))
     await db.commit()
+
+
+@router.post("/logout-all", status_code=204, summary="Sign out every session, including this one")
+async def logout_all(response: Response, principal: Principal = Depends(get_session_principal), db: AsyncSession = Depends(get_db)) -> None:
+    await db.execute(update(UserSession).where(UserSession.user_id == principal.user.id, UserSession.revoked_at.is_(None)).values(revoked_at=utcnow()))
+    await audit(db, "user.logout_all", organisation_id=principal.organisation_id, user_id=principal.user.id)
+    await db.commit()
+    _clear_session_cookies(response)
+
+
+# ----------------------------------------------------------------------------- e-mail verification and password reset
+
+
+@router.post("/verify-email/request", status_code=202, summary="Send (or resend) the verification e-mail")
+async def request_verification(request: Request, principal: Principal = Depends(get_session_principal), db: AsyncSession = Depends(get_db)) -> dict:
+    user = await db.get(User, principal.user.id)
+    if user.email_verified_at is not None:
+        return {"status": "already_verified"}
+    allowed, retry = await ratelimit.hit(f"verify:{user.id}", 3, 3600)
+    if not allowed:
+        raise HTTPException(status_code=429, detail={"code": "rate_limited", "message": "Verification email already sent. Please wait before requesting another."}, headers={"Retry-After": str(retry)})
+    delivery = await account_tokens.send_verification(db, user, client_ip(request))
+    await audit(db, "user.verification_requested", organisation_id=principal.organisation_id, user_id=user.id, details={"delivery": delivery}, ip=client_ip(request))
+    await db.commit()
+    return {"status": delivery, "delivery_configured": get_settings().email_delivery_configured,
+            "message": {"sent": "Verification email sent.", "logged_dev": "Development mode: the verification link was written to the API log.",
+                        "captured": "Captured (test mode).", "failed": "The email provider rejected the message. Try again later.",
+                        "not_configured": "Email delivery is not configured on this instance, so no message was sent."}[delivery]}
+
+
+@router.post("/verify-email/confirm", summary="Confirm an e-mail address with a single-use token")
+async def confirm_verification(body: TokenIn, request: Request, db: AsyncSession = Depends(get_db)) -> dict:
+    allowed, retry = await ratelimit.hit(f"verify-confirm:{client_ip(request)}", 20, 600)
+    if not allowed:
+        raise HTTPException(status_code=429, detail={"code": "rate_limited", "message": "Too many attempts."}, headers={"Retry-After": str(retry)})
+    user = await account_tokens.consume_token(db, body.token, account_tokens.VERIFY)
+    if user is None:
+        await db.commit()
+        raise HTTPException(status_code=400, detail={"code": "invalid_token", "message": "This verification link is invalid, has expired or was already used."})
+    user.email_verified_at = user.email_verified_at or utcnow()
+    await audit(db, "user.email_verified", user_id=user.id, ip=client_ip(request))
+    await db.commit()
+    return {"status": "verified"}
+
+
+RESET_RESPONSE = {"status": "accepted", "message": "If an account exists for that address, a password-reset link has been sent."}
+
+
+@router.post("/password-reset/request", status_code=202, summary="Request a password-reset link (response never reveals whether the account exists)")
+async def request_password_reset(body: PasswordResetRequestIn, request: Request, db: AsyncSession = Depends(get_db)) -> dict:
+    ip, email = client_ip(request), body.email.lower()
+    ip_ok, retry = await ratelimit.hit(f"reset-ip:{ip}", 5, 3600)
+    if not ip_ok:
+        raise HTTPException(status_code=429, detail={"code": "rate_limited", "message": "Too many reset requests. Try again later."}, headers={"Retry-After": str(retry)})
+    email_ok, _ = await ratelimit.hit(f"reset-email:{email}", 3, 3600)
+    user = await db.scalar(select(User).where(func.lower(User.email) == email))
+    if email_ok and user is not None and user.is_active:
+        delivery = await account_tokens.send_password_reset(db, user, ip)
+        await audit(db, "user.password_reset_requested", user_id=user.id, details={"delivery": delivery}, ip=ip)
+        await db.commit()
+    return dict(RESET_RESPONSE, delivery_configured=get_settings().email_delivery_configured)
+
+
+@router.post("/password-reset/confirm", summary="Set a new password with a single-use token; signs out every session")
+async def confirm_password_reset(body: PasswordResetConfirmIn, request: Request, response: Response, db: AsyncSession = Depends(get_db)) -> dict:
+    allowed, retry = await ratelimit.hit(f"reset-confirm:{client_ip(request)}", 10, 600)
+    if not allowed:
+        raise HTTPException(status_code=429, detail={"code": "rate_limited", "message": "Too many attempts."}, headers={"Retry-After": str(retry)})
+    user = await account_tokens.consume_token(db, body.token, account_tokens.RESET)
+    if user is None:
+        await db.commit()
+        raise HTTPException(status_code=400, detail={"code": "invalid_token", "message": "This reset link is invalid, has expired or was already used."})
+    user.password_hash = hash_password(body.new_password)
+    user.failed_logins, user.locked_until = 0, None
+    user.email_verified_at = user.email_verified_at or utcnow()  # receiving the link proves control of the address
+    await db.execute(update(UserSession).where(UserSession.user_id == user.id, UserSession.revoked_at.is_(None)).values(revoked_at=utcnow()))
+    await audit(db, "user.password_reset", user_id=user.id, ip=client_ip(request))
+    await db.commit()
+    _clear_session_cookies(response)
+    return {"status": "password_reset", "message": "Password updated. Sign in with your new password."}
 
 
 # ----------------------------------------------------------------------------- GitHub OAuth (read-only)
@@ -315,6 +407,7 @@ async def github_callback(request: Request, code: str | None = None, state: str 
         if not settings.allow_registration:
             return _frontend_redirect("/login?error=registration_closed")
         user, _org = await create_user_with_workspace(db, email, profile.get("name") or login, None, None)
+        user.email_verified_at = utcnow()  # GitHub confirmed this as the verified primary address
         db.add(GitHubAccount(user_id=user.id, github_user_id=github_id, login=login, avatar_url=profile.get("avatar_url"),
                              access_token_encrypted=encrypt_secret(token), scopes=scopes))
     if user is None or not user.is_active:

@@ -23,8 +23,11 @@ async def get_subscription(session: AsyncSession, organisation_id: int) -> Subsc
 
 
 async def org_plan(session: AsyncSession, organisation_id: int) -> Plan:
+    """The plan whose entitlements apply now (accounts for cancellation, grace periods and expiry)."""
+    from app.services.billing import effective_plan_key
+
     sub = await get_subscription(session, organisation_id)
-    return get_plan(sub.plan if sub.status in ("active", "trialing") else "free")
+    return get_plan(effective_plan_key(sub))
 
 
 async def get_usage(session: AsyncSession, organisation_id: int, metric: str) -> int:

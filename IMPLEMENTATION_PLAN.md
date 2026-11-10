@@ -31,16 +31,18 @@ Phases follow the build specification. Status key: ✅ done · 🟡 partly done 
 - ✅ Competitor change reports
 - 🟡 "New feature detection" is limited to release notes and dependency changes (no code diff analysis)
 
-## Phase 5 — Commercialisation 🟡
+## Phase 5 — Commercialisation ✅ (test mode)
 - ✅ Plans, entitlements and usage limits enforced by the API; upgrade prompts in the UI
 - ✅ API keys, per-key rate limits, monthly usage metering
-- ✅ Billing architecture with a modular provider (manual provider active)
-- ⬜ Live payment provider (deliberately deferred until pricing is validated)
+- ✅ Provider-neutral subscription lifecycle (pending, active, past_due, cancelled, expired)
+- ✅ Stripe hosted checkout, signed idempotent webhooks, cancellation, grace period, refunds, payment history (test mode; mocked-provider tests)
+- ✅ Email verification and password reset with a provider-independent mailer (Resend adapter)
+- ⬜ Live payments (deliberately not activated)
 
 ## Cross-cutting ✅
 - ✅ Background worker with retries, rate-limit deferral and recurring schedule
 - ✅ Security controls (see SECURITY.md) and audit logging
-- ✅ Automated tests: backend 101, frontend 28; CI workflow
+- ✅ Automated tests: backend 126, frontend 38; CI workflow file (needs the Workflows permission to be pushed)
 - ✅ Documentation set and Railway deployment configuration
 
 ## Next phases (proposed)

@@ -54,9 +54,25 @@ class Settings(BaseSettings):
     sync_interval_hours: int = 24
     discovery_enabled: bool = True
 
-    # --- product ---
+    # --- email (provider independent; "console" never delivers) ---
+    email_provider: Literal["console", "resend"] = "console"
+    resend_api_key: str | None = None
+    email_from: str = "Signal Atlas <no-reply@example.com>"  # must use a domain verified with the provider
+    email_reply_to: str | None = None
+    email_verification_required: bool = True  # soft gate: verify before reports, API keys and live GitHub operations
+    verification_token_hours: int = 24
+    password_reset_token_minutes: int = 30
+
+    # --- product & billing ---
     seed_demo_data: bool = False
     billing_provider: Literal["manual", "stripe"] = "manual"
+    stripe_secret_key: str | None = None  # test-mode key (sk_test_...); live keys are refused unless allow_live_payments
+    stripe_webhook_secret: str | None = None
+    stripe_api_url: str = "https://api.stripe.com"
+    allow_live_payments: bool = False
+    billing_currency: str = "gbp"
+    billing_grace_days: int = 7  # access kept this long after a failed renewal
+    plan_overrides_json: str | None = None  # e.g. {"pro": {"price_gbp_month": 25, "reports_per_month": 40}}
     allow_self_serve_plan_change: bool = False  # dev/test only: lets an owner switch plan without payment
     snapshot_retention_days: int = 730
     audit_retention_days: int = 365
@@ -81,6 +97,8 @@ class Settings(BaseSettings):
                 raise ValueError("SECRET_KEY must be set to a random value of at least 32 characters in production")
             if self.allow_self_serve_plan_change:
                 raise ValueError("ALLOW_SELF_SERVE_PLAN_CHANGE must be false in production")
+        if self.stripe_secret_key and not self.stripe_secret_key.startswith(("sk_test_", "rk_test_")) and not self.allow_live_payments:
+            raise ValueError("STRIPE_SECRET_KEY must be a test-mode key (sk_test_...). Live payments are not activated in this release.")
         return self
 
     @property
@@ -98,6 +116,18 @@ class Settings(BaseSettings):
     @property
     def oauth_redirect_url(self) -> str:
         return self.github_oauth_redirect_url or f"{self.frontend_url.rstrip('/')}/api/v1/auth/github/callback"
+
+    @property
+    def email_delivery_configured(self) -> bool:
+        return self.email_provider == "resend" and bool(self.resend_api_key)
+
+    @property
+    def stripe_configured(self) -> bool:
+        return self.billing_provider == "stripe" and bool(self.stripe_secret_key)
+
+    @property
+    def stripe_test_mode(self) -> bool:
+        return bool(self.stripe_secret_key) and self.stripe_secret_key.startswith(("sk_test_", "rk_test_"))
 
     @property
     def is_sqlite(self) -> bool:

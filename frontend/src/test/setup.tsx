@@ -54,10 +54,11 @@ export function mockApi(routes: Record<string, Route>) {
 }
 
 export const ME = {
-  user: { id: 1, email: "alice@example.com", full_name: "Alice Owner", job_title: null, has_password: true, created_at: "2026-11-01T00:00:00Z" },
+  user: { id: 1, email: "alice@example.com", full_name: "Alice Owner", job_title: null, has_password: true, created_at: "2026-11-01T00:00:00Z", email_verified: true },
+  email: { verification_required: true, delivery_configured: false },
   organisation: { id: 1, name: "Org A", slug: "org-a" },
   role: "owner",
-  plan: { key: "free", name: "Free", price_gbp_month: 0, tagline: "", watchlist_items: 10, competitors: 1, reports_per_month: 3, live_syncs_per_month: 20, api_keys: 0,
+  plan: { key: "free", name: "Free", price_gbp_month: 0, price_gbp_year: 0, purchasable: false, tagline: "", watchlist_items: 10, competitors: 1, reports_per_month: 3, live_syncs_per_month: 20, api_keys: 0,
     api_requests_per_month: 0, api_rate_per_minute: 0, ai_enrichment: false, custom_scoring_weights: false, seats: 1 },
   csrf_token: "csrf-token-123",
   github: { connected: false, login: null, avatar_url: null, scopes: null, oauth_configured: false },

@@ -240,5 +240,26 @@ class OrganisationUpdateIn(BaseModel):
     name: str = Field(min_length=1, max_length=200)
 
 
-class PlanChangeIn(BaseModel):
-    plan: Literal["free", "pro", "professional", "business"]
+class CheckoutIn(BaseModel):
+    plan: Literal["pro", "business"]
+    interval: Literal["month", "year"] = "month"
+
+
+class TokenIn(BaseModel):
+    token: str = Field(min_length=20, max_length=200)
+
+
+class PasswordResetRequestIn(BaseModel):
+    email: EmailStr
+
+
+class PasswordResetConfirmIn(BaseModel):
+    token: str = Field(min_length=20, max_length=200)
+    new_password: str = Field(min_length=10, max_length=128)
+
+    @field_validator("new_password")
+    @classmethod
+    def _password_strength(cls, v: str) -> str:
+        if v.lower() == v or not any(c.isdigit() for c in v):
+            raise ValueError("Password must include an upper-case letter and a digit")
+        return v

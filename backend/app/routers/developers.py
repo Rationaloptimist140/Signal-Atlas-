@@ -7,7 +7,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
-from app.deps import Principal, get_principal, require_analyst
+from app.deps import Principal, get_principal, require_verified_analyst
 from app.models import Contributor, DataSource, DeveloperProfile, Repository, utcnow
 from app.routers.common import SourceParam, like_pattern, paginate, resolve_source, source_query
 from app.schemas import DeveloperListItem, DeveloperOut, Page
@@ -132,7 +132,7 @@ async def get_developer(developer_id: int, principal: Principal = Depends(get_pr
 
 
 @router.post("/{developer_id}/sync", status_code=202, summary="Refresh a developer's public profile from GitHub")
-async def sync_developer(developer_id: int, principal: Principal = Depends(require_analyst), db: AsyncSession = Depends(get_db)) -> dict:
+async def sync_developer(developer_id: int, principal: Principal = Depends(require_verified_analyst), db: AsyncSession = Depends(get_db)) -> dict:
     dev = await db.get(DeveloperProfile, developer_id)
     if dev is None:
         raise HTTPException(status_code=404, detail={"code": "not_found", "message": "Developer not found."})

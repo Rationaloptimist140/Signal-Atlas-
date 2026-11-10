@@ -11,8 +11,8 @@ from app.deps import (
     client_ip,
     get_session_principal,
     require_admin,
-    require_owner,
     require_platform_admin,
+    require_verified_admin,
 )
 from app.models import (
     ApiKey,
@@ -26,8 +26,7 @@ from app.models import (
     User,
     utcnow,
 )
-from app.plans import PLAN_ORDER, PLANS
-from app.schemas import ApiKeyIn, OrganisationUpdateIn, PlanChangeIn, WeightsIn
+from app.schemas import ApiKeyIn, OrganisationUpdateIn, WeightsIn
 from app.security import generate_api_key
 from app.services import demo, jobs
 from app.services.intelligence import get_weights
@@ -35,7 +34,6 @@ from app.services.scoring import DEFAULT_WEIGHTS, METRIC_LABELS, validate_weight
 from app.services.usage import (
     audit,
     enforce_count_limit,
-    get_subscription,
     get_usage,
     org_plan,
     upgrade_required,
@@ -60,7 +58,7 @@ async def list_api_keys(principal: Principal = Depends(get_session_principal), d
 
 
 @router.post("/api-keys", status_code=201, summary="Create an API key (shown once)")
-async def create_api_key(body: ApiKeyIn, request: Request, principal: Principal = Depends(require_admin), db: AsyncSession = Depends(get_db)) -> dict:
+async def create_api_key(body: ApiKeyIn, request: Request, principal: Principal = Depends(require_verified_admin), db: AsyncSession = Depends(get_db)) -> dict:
     plan = await org_plan(db, principal.organisation_id)
     if plan.api_keys == 0:
         raise upgrade_required(plan, "api_access", "API access starts on the Pro plan.")
@@ -86,55 +84,6 @@ async def revoke_api_key(key_id: int, request: Request, principal: Principal = D
     await db.commit()
 
 
-# ----------------------------------------------------------------------------- billing
-
-
-@router.get("/billing/plans", summary="Plans and entitlements (proposed pricing, payments not live)")
-async def plans() -> dict:
-    return {"plans": [PLANS[k].to_dict() for k in PLAN_ORDER], "currency": "GBP",
-            "payments_live": False, "note": "Pricing is a proposal under validation. No payment provider is activated."}
-
-
-@router.get("/billing/subscription", summary="Current subscription and usage against limits")
-async def subscription(principal: Principal = Depends(get_session_principal), db: AsyncSession = Depends(get_db)) -> dict:
-    from app.models import Competitor, WatchlistItem
-
-    sub = await get_subscription(db, principal.organisation_id)
-    plan = await org_plan(db, principal.organisation_id)
-    await db.commit()
-    settings = get_settings()
-
-    async def count(model, *cond) -> int:
-        return int(await db.scalar(select(func.count()).select_from(model).where(*cond)) or 0)
-
-    return {
-        "plan": plan.to_dict(), "status": sub.status, "provider": sub.provider, "current_period_end": sub.current_period_end,
-        "usage": [
-            {"key": "reports", "label": "Reports this month", "used": await get_usage(db, principal.organisation_id, "reports"), "limit": plan.reports_per_month},
-            {"key": "live_syncs", "label": "Live GitHub requests this month", "used": await get_usage(db, principal.organisation_id, "live_syncs"), "limit": plan.live_syncs_per_month},
-            {"key": "api_requests", "label": "API requests this month", "used": await get_usage(db, principal.organisation_id, "api_requests"), "limit": plan.api_requests_per_month},
-            {"key": "watchlist_items", "label": "Saved items", "used": await count(WatchlistItem, WatchlistItem.organisation_id == principal.organisation_id), "limit": plan.watchlist_items},
-            {"key": "competitors", "label": "Competitors", "used": await count(Competitor, Competitor.organisation_id == principal.organisation_id), "limit": plan.competitors},
-        ],
-        "billing": {"payments_live": False, "provider": settings.billing_provider, "self_serve_plan_change": settings.allow_self_serve_plan_change,
-                    "message": "Live payments are not activated. Plan changes are applied manually while pricing is validated."},
-    }
-
-
-@router.post("/billing/checkout", summary="Start a plan change (payments are not live)")
-async def checkout(body: PlanChangeIn, request: Request, principal: Principal = Depends(require_owner), db: AsyncSession = Depends(get_db)) -> dict:
-    settings = get_settings()
-    if not settings.allow_self_serve_plan_change:
-        raise HTTPException(status_code=501, detail={
-            "code": "billing_not_configured",
-            "message": "Online checkout is not activated yet. Pricing is being validated; contact the Signal Atlas team to change plan."})
-    sub = await get_subscription(db, principal.organisation_id)
-    previous, sub.plan, sub.status, sub.provider = sub.plan, body.plan, "active", "manual"
-    await audit(db, "subscription.changed", organisation_id=principal.organisation_id, user_id=principal.user_id, details={"from": previous, "to": body.plan, "mode": "development"}, ip=client_ip(request))
-    await db.commit()
-    return {"status": "changed", "plan": PLANS[body.plan].to_dict(), "note": "Development mode: plan switched without payment."}
-
-
 # ----------------------------------------------------------------------------- settings
 
 
@@ -149,7 +98,7 @@ async def get_scoring(principal: Principal = Depends(get_session_principal), db:
 async def put_scoring(body: WeightsIn, principal: Principal = Depends(require_admin), db: AsyncSession = Depends(get_db)) -> dict:
     plan = await org_plan(db, principal.organisation_id)
     if not plan.custom_scoring_weights:
-        raise upgrade_required(plan, "custom_scoring_weights", "Custom scoring weights are available on the Professional plan and above.")
+        raise upgrade_required(plan, "custom_scoring_weights", "Custom scoring weights are available on the Business plan and above.")
     try:
         weights = validate_weights(body.weights)
     except ValueError as exc:
@@ -190,7 +139,12 @@ async def organisation(principal: Principal = Depends(get_session_principal), db
              "detail": f"Provider: {settings.llm_provider}. Reports use the deterministic rules engine when no provider is configured.", "env": ["LLM_PROVIDER", "ANTHROPIC_API_KEY or OPENAI_API_KEY"]},
             {"key": "redis", "name": "Redis (shared rate limiting)", "configured": bool(settings.redis_url),
              "detail": "Optional. Only needed when running more than one API instance.", "env": ["REDIS_URL"]},
-            {"key": "billing", "name": "Payment provider", "configured": False, "detail": "Intentionally not activated until pricing is validated.", "env": []},
+            {"key": "email", "name": "Email delivery (verification and password reset)", "configured": settings.email_delivery_configured,
+             "detail": f"Provider: {settings.email_provider}. Sender: {settings.email_from}. Without it no email is sent and accounts cannot be verified.",
+             "env": ["EMAIL_PROVIDER=resend", "RESEND_API_KEY", "EMAIL_FROM"]},
+            {"key": "billing", "name": "Card payments (Stripe, test mode)", "configured": settings.stripe_configured and bool(settings.stripe_webhook_secret),
+             "detail": "Hosted checkout and signed webhooks. Only test-mode keys are accepted in this release; live payments are not activated.",
+             "env": ["BILLING_PROVIDER=stripe", "STRIPE_SECRET_KEY", "STRIPE_WEBHOOK_SECRET"]},
         ],
     }
 

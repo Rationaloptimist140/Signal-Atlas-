@@ -93,7 +93,8 @@ export async function api<T = unknown>(path: string, options: { method?: string;
       if (response.status === 402 && detail.code === "upgrade_required") {
         window.dispatchEvent(new CustomEvent(UPGRADE_EVENT, { detail }));
       }
-      if (response.status === 401 && !/^\/(login|register)/.test(window.location.pathname) && !path.startsWith("/auth/login")) {
+      const publicPage = /^\/($|pricing|login|register|forgot-password|reset-password|verify-email)/.test(window.location.pathname);
+      if (response.status === 401 && !publicPage && !path.startsWith("/auth/login")) {
         window.location.assign(`/login?next=${encodeURIComponent(window.location.pathname)}`);
       }
     }

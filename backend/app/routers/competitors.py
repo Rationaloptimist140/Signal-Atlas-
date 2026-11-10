@@ -8,7 +8,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
-from app.deps import Principal, get_principal, require_analyst
+from app.deps import Principal, get_principal, require_analyst, require_verified
 from app.models import (
     ChangeEvent,
     Competitor,
@@ -141,6 +141,7 @@ async def add_competitor_repository(competitor_id: int, body: CompetitorRepoIn, 
     elif body.full_name:
         repo = await db.scalar(select(Repository).where(func.lower(Repository.full_name) == body.full_name.lower()))
         if repo is None:
+            await require_verified(principal)  # fetching an untracked repository is a live GitHub operation
             async with await jobs.github_client_for(db, principal.user_id) as client:
                 try:
                     repo = await ingestion.track_repository(db, client, body.full_name)

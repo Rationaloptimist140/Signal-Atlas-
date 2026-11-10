@@ -80,3 +80,7 @@ export function categoryLabel(key: string | null | undefined): string {
 export function titleCase(value: string): string {
   return value.replace(/[_-]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
+
+export function formatMoney(minor: number, currency = "GBP"): string {
+  return new Intl.NumberFormat("en-GB", { style: "currency", currency, minimumFractionDigits: minor % 100 === 0 ? 0 : 2 }).format(minor / 100);
+}

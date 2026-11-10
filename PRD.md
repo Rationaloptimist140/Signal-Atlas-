@@ -54,17 +54,16 @@ Dark premium interface (palette and typography per the specification), collapsib
 
 Pages: Overview · Explore Technologies · Repository Intelligence (+ detail with 8 tabs) · Developer Intelligence (+ detail) · Emerging Trends · Opportunity Discovery (+ detail) · Competitor Intelligence (+ detail) · Intelligence Reports (+ detail) · Watchlists · API & Developers · Settings.
 
-## 7. Commercial model (proposal — payments not live)
+## 7. Commercial model (initial pricing hypotheses)
 
-| Plan | Price | Reports/mo | Saved items | Competitors | Live GitHub requests/mo | API requests/mo | AI enrichment | Custom weights |
-|---|---:|---:|---:|---:|---:|---:|:-:|:-:|
-| Free | £0 | 3 | 10 | 1 | 20 | — | — | — |
-| Pro | £19 | 30 | 100 | 5 | 300 | 10,000 | ✓ | — |
-| Professional | £49 | 150 | 500 | 20 | 1,500 | 100,000 | ✓ | ✓ |
-| Business | £149 | 750 | 2,500 | 100 | 10,000 | 1,000,000 | ✓ | ✓ |
-| Enterprise | Custom | Unlimited | Unlimited | Unlimited | Unlimited | Unlimited | ✓ | ✓ |
+| Plan | Monthly | Annual | AI reports/mo | Watched items | Competitors | Live GitHub requests/mo | API calls/mo | AI enrichment | Custom weights |
+|---|---:|---:|---:|---:|---:|---:|---:|:-:|:-:|
+| Free | £0 | £0 | 3 | 10 | 1 | 20 | — | — | — |
+| Pro | £19 | £190 | 30 | 100 | 5 | 300 | 10,000 | ✓ | — |
+| Business | £49 | £490 | 150 | 500 | 20 | 1,500 | 100,000 | ✓ | ✓ |
+| Enterprise | Custom | Custom | Unlimited | Unlimited | Unlimited | Unlimited | Unlimited | ✓ | ✓ |
 
-Limits are enforced by the API (HTTP 402 with an upgrade payload) and surfaced as upgrade prompts. These limits are starting assumptions to validate with customers.
+Prices and limits live in one place (`backend/app/plans.py`) and can be overridden with `PLAN_OVERRIDES_JSON`. Limits are enforced by the API (HTTP 402 with an upgrade payload). Card billing uses Stripe hosted checkout behind a provider-neutral subscription layer; only test mode is enabled. Web3 payments and wallet login are out of scope.
 
 ## 8. Definition of MVP success
 
@@ -72,4 +71,4 @@ A user can: (1) register and log in; (2) connect a GitHub account securely; (3) 
 
 ## 9. Out of scope for the MVP
 
-Live payments · team invitations and email verification (need an email provider) · Neo4j · code-level novelty analysis · package-registry download statistics · external market data (search volume, funding, job postings) · organisation-wide GitHub App install.
+Live (non-test) payments · team invitations · Web3 / wallet features · Neo4j · code-level novelty analysis · package-registry download statistics · external market data (search volume, funding, job postings) · organisation-wide GitHub App install.

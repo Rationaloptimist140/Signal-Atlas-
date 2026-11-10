@@ -21,7 +21,7 @@ API keys are read-only unless created with the `read write` scope, and can never
 |---|---|---|
 | 401 | `not_authenticated`, `invalid_api_key`, `invalid_credentials` | Sign in or check the key |
 | 402 | `upgrade_required` | Plan limit reached; payload has `feature`, `current_plan`, `suggested_plan`, `limit`, `used` |
-| 403 | `csrf_failed`, `insufficient_role`, `read_only_key`, `session_required` | Not permitted |
+| 403 | `csrf_failed`, `insufficient_role`, `read_only_key`, `session_required`, `email_verification_required` | Not permitted (the last: confirm your email address first) |
 | 404 | `not_found` | Missing, or belongs to another organisation |
 | 422 | `validation_error` | Invalid input; `fields` lists problems |
 | 423 | `account_locked` | Too many failed logins |
@@ -31,7 +31,7 @@ API keys are read-only unless created with the `read write` scope, and can never
 ## Endpoints
 
 ### Auth
-`GET /auth/providers` · `POST /auth/register` · `POST /auth/login` · `POST /auth/logout` · `GET /auth/me` · `PATCH /auth/me` · `POST /auth/change-password` · `GET /auth/github/start?mode=connect|login` · `DELETE /auth/github`
+`GET /auth/providers` · `POST /auth/register` · `POST /auth/login` · `POST /auth/logout` · `POST /auth/logout-all` · `POST /auth/verify-email/request` · `POST /auth/verify-email/confirm` · `POST /auth/password-reset/request` · `POST /auth/password-reset/confirm` · `GET /auth/me` · `PATCH /auth/me` · `POST /auth/change-password` · `GET /auth/github/start?mode=connect|login` · `DELETE /auth/github`
 
 ### Repository Intelligence
 | Endpoint | Description |
@@ -73,7 +73,18 @@ A report's `content` contains `executive_summary`, `verified_facts` (numbered `F
 `GET /dashboard` · `GET /ecosystem/graph` (`category`, `limit`) · `GET /search?q=` · `GET /notifications` · `POST /notifications/read-all` · `POST /notifications/{id}/read`
 
 ### Account
-`GET|POST /api-keys` · `DELETE /api-keys/{id}` · `GET /billing/plans` · `GET /billing/subscription` · `POST /billing/checkout` (returns 501 unless development plan switching is enabled) · `GET|PUT|DELETE /settings/scoring` · `GET|PATCH /settings/organisation` · `GET /settings/audit-log`
+`GET|POST /api-keys` · `DELETE /api-keys/{id}` · `GET|PUT|DELETE /settings/scoring` · `GET|PATCH /settings/organisation` · `GET /settings/audit-log`
+
+### Billing
+| Endpoint | Description |
+|---|---|
+| `GET /billing/plans` | Public. Plans with monthly and annual prices, limits, and whether checkout is available |
+| `GET /billing/subscription` | Status (`pending`, `active`, `past_due`, `cancelled`, `expired`), interval, period dates, the plan whose limits apply now, and usage against limits |
+| `POST /billing/checkout` | Owner. `{"plan": "pro"|"business", "interval": "month"|"year"}` → `{"checkout_url"}` for hosted checkout. 503 `billing_not_configured` when no provider is set |
+| `POST /billing/cancel` · `POST /billing/resume` | Owner. Cancel at period end / undo |
+| `POST /billing/portal` | Owner. Provider billing portal URL (card, invoices) |
+| `GET /billing/payments` | Payment history |
+| `POST /billing/webhooks/stripe` | Provider only. Signature-verified and idempotent |
 
 ### System (workspace admin; platform admins only in production)
 `GET /system/status` · `POST /system/demo/load` · `DELETE /system/demo` · `POST /system/discover` · `POST /system/recompute`
@@ -93,8 +104,7 @@ curl "https://YOUR-HOST/api/v1/opportunities?min_score=65&risk=low&source=live" 
 | Plan | Requests / minute per key | Requests / month |
 |---|---:|---:|
 | Pro | 60 | 10,000 |
-| Professional | 120 | 100,000 |
-| Business | 300 | 1,000,000 |
+| Business | 180 | 100,000 |
 | Enterprise | 600 | Unlimited |
 
 Every accepted API-key request increments the organisation's monthly `api_requests` counter (`GET /billing/subscription`).

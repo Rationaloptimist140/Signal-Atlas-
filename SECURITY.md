@@ -11,6 +11,9 @@ Read-only access to public data · least privilege · secrets never reach the br
 | Passwords | Argon2id (`argon2-cffi`), policy: ≥10 characters, upper-case letter and digit; automatic rehash; timing-equalised login for unknown emails; identical error for wrong email and wrong password |
 | Brute force | Login rate limit (20/min per IP), account lock for 15 minutes after 5 failures, registration limit (10/hour per IP), failed logins audited |
 | Sessions | Opaque 256-bit token in an `HttpOnly`, `SameSite=Lax`, `Secure` (production) cookie; only a SHA-256 hash is stored; server-side revocation on logout; changing password revokes other sessions; 14-day expiry |
+| Email verification | Soft gate enforced by the API: unverified accounts can browse, but report generation, API key creation and live GitHub requests return 403 until the address is confirmed. Tokens are 256-bit, single-use, stored as SHA-256 hashes, expire after 24 hours, and are removed from the browser address bar after use |
+| Password reset | 30-minute single-use hashed tokens; identical response whether or not the account exists; rate limited per IP and per address; a successful reset revokes every session and clears lockout; all steps audited. Tokens are never logged in production |
+| Payments | Stripe hosted checkout (card data never touches this application). Webhooks are HMAC-SHA256 signature-verified with a 5-minute tolerance and processed idempotently through a unique event ledger; live-mode events and live API keys are refused in this release. Entitlements change only on provider-confirmed events, never on the browser redirect |
 | CSRF | Per-session CSRF token required in `X-CSRF-Token` for every state-changing cookie-authenticated request; compared in constant time. OAuth uses a signed, `HttpOnly` state cookie |
 | GitHub OAuth | Scopes `read:user user:email` only (identity; never `repo`). Token encrypted at rest (Fernet), used server-side only, never serialised to clients or logs; grant revoked on disconnect. GitHub accounts are never auto-linked to an existing password account |
 | GitHub data | Public endpoints only, GET requests (plus the read-only GraphQL endpoint). No private repositories, no email addresses stored. Bots excluded from developer profiles |
@@ -36,7 +39,8 @@ Read-only access to public data · least privilege · secrets never reach the br
 
 ## Known limitations (MVP)
 
-* No email verification or password reset (needs an email provider). Registration reveals whether an email is already registered.
+* Email verification and password reset are implemented but deliver nothing until an email provider is configured. Registration still reveals whether an email is already registered.
+* The Stripe integration is verified with mocked provider responses only; it has not yet been exercised against Stripe's test environment.
 * No multi-factor authentication.
 * Rate limiting is per process unless Redis is configured.
 * Session cookies rely on the frontend proxy; do not expose the API service publicly without it unless CORS and cookie settings are reviewed.
