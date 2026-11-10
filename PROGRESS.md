@@ -1,72 +1,76 @@
 # Progress
 
-_Last updated: 10 November 2026 — implementation session 1._
+_Last updated: 10 November 2026 — session 2 (MVP completion, v0.2.0)._
 
-## Summary
+## Status at a glance
 
-Phases 1–4 are implemented and Phase 5 is implemented except live payments. The product runs end to end locally: FastAPI on PostgreSQL 16, Next.js through its API proxy, real public GitHub data. **Nothing is deployed.**
+| Area | Implemented | Automated tests | Verified against the real service | Deployed |
+|---|:-:|:-:|:-:|:-:|
+| Repository, developer, trend, opportunity, competitor intelligence and scoring | ✅ | ✅ | ✅ live GitHub API (anonymous) | ❌ |
+| Registration, login, sessions, roles, API keys | ✅ | ✅ | ✅ end to end in a browser | ❌ |
+| Email verification and password reset | ✅ | ✅ | 🟡 flows verified end to end with development links; **no email has been sent through Resend** (no credentials) | ❌ |
+| Subscription lifecycle, entitlements, usage limits | ✅ | ✅ | n/a | ❌ |
+| Stripe hosted checkout and webhooks (test mode) | ✅ | ✅ mocked provider | ❌ **not yet run against Stripe** (no credentials) | ❌ |
+| GitHub OAuth sign-in | ✅ | ✅ mocked provider | ❌ needs an OAuth app | ❌ |
+| AI report enrichment | ✅ | ✅ fake provider | ❌ needs an LLM key | ❌ |
+| CI workflow | ✅ file in repository | — | see "CI" below | — |
 
-## Verification performed in this session
+Nothing is deployed and no paid resource has been created. The product is **not production-ready** until the external configuration in [TASKS.md](TASKS.md) is done.
+
+## Verification performed in session 2
 
 | Check | Result |
 |---|---|
-| Backend tests on SQLite | 101 passed |
-| Backend tests on PostgreSQL 16 | 101 passed |
+| Backend tests on SQLite | 126 passed |
+| Backend tests on PostgreSQL 16 | 126 passed |
 | `ruff check app tests alembic` | clean |
-| `alembic upgrade head` + `alembic check` on PostgreSQL 16 | applied; no drift from models |
-| `pip-audit -r requirements.txt` | no known vulnerabilities |
-| Frontend `tsc --noEmit` | clean |
-| Frontend tests (Vitest + Testing Library) | 28 passed |
-| Frontend `next build` | succeeded (20 routes) |
-| `npm audit --omit=dev` | 0 vulnerabilities (PostCSS inside Next pinned via an npm override) |
-| Live GitHub API (anonymous) | Discovery search stored 30 repositories; full sync of `fastapi/fastapi` collected languages, contributors, 52 weeks of commits, releases, forks and dependencies; scores, opportunities and signals computed from that data |
-| End-to-end through the Next.js proxy | Register → session cookie → dashboard → demo load → report generation; CSRF rejection confirmed; all 12 app pages returned HTTP 200 |
-| Browser smoke test (headless Chromium, ad hoc) | 13 screens rendered at 1440px and 390px with no console errors |
+| Migrations `0001` → `0002` on PostgreSQL 16 (upgrade, downgrade, upgrade) and `alembic check` | applied; no drift |
+| Migrations on SQLite (upgrade to head, downgrade to base) | passed |
+| `pip-audit` / `npm audit --omit=dev` | no known vulnerabilities / 0 vulnerabilities |
+| Frontend ESLint, `tsc --noEmit` | clean |
+| Frontend tests | 38 passed |
+| Frontend production build | succeeded (25 routes) |
+| Browser run (headless Chromium, desktop and 390 px) | 18 of 18 checks passed, no console errors: landing → pricing → sign-up → soft gate blocks a report → verify by link → report generated → sign out → forgot password → reset → old password rejected → new password accepted |
 
-Not verified against real services (no credentials available): GitHub OAuth (tested with mocked GitHub responses), LLM enrichment (tested with a fake provider), Railway deployment.
+## Definition of done
 
-## Definition of MVP success
+| Criterion | Status |
+|---|---|
+| Application, frontend build and backend start; migrations run | ✅ |
+| Register and log in | ✅ |
+| Email verification and password recovery "when configured" | 🟡 implemented and tested; delivery needs a Resend key and a verified sending domain |
+| Repository discovery, developer intelligence, emerging signals | ✅ |
+| Opportunity reports, explainable scoring, competitor monitoring | ✅ (AI enrichment needs an LLM key; rule-based reports work without) |
+| Pricing and subscription management | ✅ |
+| Card checkout in test mode "when credentials are configured" | 🟡 implemented and tested with mocked Stripe responses; not yet run against Stripe |
+| Entitlements protect premium features; usage limits enforced | ✅ server-side |
+| Security tests and full regression pass | ✅ |
+| CI active or blocker documented | 🟡 see below |
+| Documentation and environment examples accurate | ✅ |
+| Delivered to GitHub | ✅ see the pull request |
 
-| # | Capability | Status |
-|---|---|---|
-| 1 | Register and log in | ✅ Verified end to end |
-| 2 | Connect a GitHub account securely | 🟡 Implemented and tested with mocks; needs `GITHUB_OAUTH_CLIENT_ID/SECRET` to use |
-| 3 | Search public GitHub repositories | ✅ Verified against the live GitHub API |
-| 4 | Explore repository development activity | ✅ Verified with live data |
-| 5 | View developer profiles | ✅ |
-| 6 | Identify emerging technology signals | ✅ (daily/weekly star signals need snapshots on several days) |
-| 7 | View commercial opportunity scores | ✅ |
-| 8 | Generate AI-powered opportunity reports | 🟡 Rules-engine reports verified; AI enrichment implemented, needs an LLM key to use |
-| 9 | Save repositories and opportunities | ✅ |
-| 10 | Monitor selected competitors | ✅ (change history starts at each repository's first full sync) |
+## CI
 
-## What was built
+`.github/workflows/ci.yml` is complete. The GitHub App used to push this code is not allowed to write files under `.github/workflows/` (GitHub returns 403: the installation lacks the **Workflows** permission). Until that permission is granted, or the file is added through GitHub's web editor, no checks run on GitHub. All checks in the workflow were run locally and pass.
 
-**Backend** — 72 API operations; 33-table schema with one Alembic migration; argon2 passwords, hashed server-side sessions, CSRF, roles, API keys; read-only GitHub client with ETags and rate-limit deferral; ingestion at two depths; manifest parsers for five ecosystems; taxonomy classifier; scoring engine; trend detection; opportunity analysis; report builder; AI providers with guardrails; PostgreSQL job queue and worker; plans, metering and audit log; fictional demo fixtures; CLI.
+## What changed in session 2
 
-**Frontend** — design system and responsive shell (collapsible sidebar, global search, notifications, live/demo switch, provenance banner); 20 routes covering all eleven sections plus detail pages; momentum charts, opportunity radar, metric radar, ecosystem map; forms with client-side validation; loading, empty and error states; upgrade prompts.
+* **Accounts** — email verification (24-hour single-use hashed tokens), password reset (30-minute tokens, generic responses, all sessions revoked), "sign out everywhere", soft gate enforced in the API.
+* **Mailer** — provider-independent, with a Resend adapter and HTML + plain-text templates. Development prints links to the API log; production never logs tokens.
+* **Billing** — four plans with monthly and annual prices in one catalogue (`PLAN_OVERRIDES_JSON` to change them); subscription states `pending`, `active`, `past_due`, `cancelled`, `expired`; 7-day grace period; cancellation at period end; payment history; Stripe hosted checkout, signed and idempotent webhooks, refunds; live keys and live-mode events refused.
+* **Frontend** — public landing and pricing pages, forgot / reset / verify pages, verification banner, rebuilt billing dashboard (plan, status, usage, checkout, cancel, payment history), ESLint.
+* **Other** — five-minute cache for repeated live GitHub searches; legacy `professional` plan folded into `business` by migration; existing accounts treated as verified by migration.
 
-**Operations** — Dockerfiles, Docker Compose, Railway config for three services, GitHub Actions CI, `.env.example`.
+## Sending domain note (mail.flanuer.com)
 
-## Decisions taken (and why)
-
-* **Job queue on PostgreSQL, Redis optional** — avoids a second paid service; Redis only adds shared rate limiting for multi-instance deployments.
-* **Score damping for missing data** — live testing showed repositories known only from search results outranking fully analysed ones on thin evidence. Totals are now pulled towards 50 in proportion to the weight without data, and low-confidence scores cannot receive an "investigate" recommendation.
-* **Release-burst guard** — only the latest 100 releases are fetched; when they all fall inside the comparison window the baseline is unknown, so no burst is claimed.
-* **Demo fixtures are fictional projects**, not real repositories with made-up figures, and are excluded from peer comparisons with live data.
-* **Tailwind 3.4, Next 15, Recharts 2** — pinned to mature majors rather than the newest releases to reduce build risk.
+Public DNS on 10 November 2026: `flanuer.com` is registered with nameservers at Porkbun. Neither `flanuer.com` nor `mail.flanuer.com` has MX or TXT records (no SPF, DKIM or DMARC), and `mail.flanuer.com` has A records pointing at a web host. It is therefore **not currently set up to send email**. It can be used with Resend if whoever controls the domain adds the DNS records Resend generates; nothing was changed and ownership was not assumed. The sender is configurable through `EMAIL_FROM`.
 
 ## Known limitations
 
-* Anonymous GitHub access allows roughly five full repository syncs per hour; set `GITHUB_TOKEN` for practical use.
-* Closed-issue and pull-request totals need a token (GraphQL); without one they are reported as missing.
-* Technology classification is keyword-based and will misclassify some repositories; it is labelled as inferred.
-* Dependencies are read from root-level manifests only.
-* No email verification, password reset or teammate invitations (no email provider configured).
-* Rate limiting is per process without Redis.
-* The ad hoc browser smoke test is not yet a committed end-to-end suite; there is no ESLint configuration.
-* Scores are unvalidated heuristics.
-
-## Change log
-
-* **Session 1** — Phases 1–5 implemented as above; documentation and deployment configuration written.
+* Anonymous GitHub access allows about five full repository syncs an hour; set `GITHUB_TOKEN` for practical use.
+* Stripe plan switches for existing subscribers go through the Stripe customer portal, not an in-app upgrade flow.
+* Registration reveals whether an email address is already registered.
+* Rate limiting is per process unless Redis is configured.
+* No teammate invitations or multi-factor authentication.
+* Technology classification is keyword-based and labelled as inferred; scores are unvalidated heuristics.
+* The repository has no licence file: all rights are reserved by default.
