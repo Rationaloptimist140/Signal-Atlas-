@@ -1,0 +1,40 @@
+# Local development stack. Usage: docker compose up --build   ->  http://localhost:3000
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment: { POSTGRES_USER: signal, POSTGRES_PASSWORD: signal, POSTGRES_DB: signal_atlas }
+    ports: ["5432:5432"]
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck: { test: ["CMD-SHELL", "pg_isready -U signal -d signal_atlas"], interval: 5s, timeout: 3s, retries: 10 }
+
+  api:
+    build: ./backend
+    environment: &backend_env
+      APP_ENV: development
+      DATABASE_URL: postgresql://signal:signal@postgres:5432/signal_atlas
+      FRONTEND_URL: http://localhost:3000
+      CORS_ORIGINS: http://localhost:3000
+      COOKIE_SECURE: "false"
+      SEED_DEMO_DATA: "true"
+      ALLOW_SELF_SERVE_PLAN_CHANGE: "true"
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      LLM_PROVIDER: ${LLM_PROVIDER:-rules}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+    depends_on: { postgres: { condition: service_healthy } }
+    ports: ["8000:8000"]
+
+  worker:
+    build: ./backend
+    command: python -m app.worker
+    environment: *backend_env
+    depends_on: { api: { condition: service_started } }
+
+  web:
+    build: { context: ./frontend, args: { BACKEND_URL: "http://api:8000" } }
+    environment: { BACKEND_URL: "http://api:8000" }
+    depends_on: [api]
+    ports: ["3000:3000"]
+
+volumes:
+  pgdata:

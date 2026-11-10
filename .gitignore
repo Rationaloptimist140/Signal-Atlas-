@@ -1,0 +1,41 @@
+# secrets / env
+.env
+.env.*
+!.env.example
+# python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.ruff_cache/
+*.db
+*.sqlite3
+# node
+node_modules/
+.next/
+out/
+coverage/
+*.tsbuildinfo
+next-env.d.ts
+# misc
+.DS_Store
+.idea/
+.vscode/
+
+# never commit credentials, keys, dumps or logs
+*.pem
+*.key
+*.p12
+*.pfx
+*.dump
+*.sql.gz
+*.log
+secrets/
+# build artefacts
+dist/
+build/
+*.egg-info/
+.coverage
+htmlcov/
+playwright-report/
+test-results/
