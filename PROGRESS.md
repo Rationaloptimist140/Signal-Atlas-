@@ -27,7 +27,7 @@ How each area was verified:
 | Rate limiting on Redis | ✅ real Redis 7 | ✅ | — | ✅ shared Redis; sign-in limit returns 429 with `Retry-After` |
 | Rate limiting fails closed when Redis is down | ✅ real Redis 7 stopped mid-run | ✅ | — | Not tested (would take the live service down) |
 | Content-Security-Policy and security headers | ✅ | — | — | ✅ real browser, zero violations |
-| Database migrations | ✅ PostgreSQL 16 | — | — | ✅ `0001`→`0002` applied on first start; data kept across four redeploys |
+| Database migrations | ✅ PostgreSQL 16 | — | — | ✅ `0001`→`0002` applied on first start; data kept across four `api` redeploys |
 | Mobile layout (390px) | ✅ | — | — | ✅ six pages, no overflow |
 | E-mail content, links, expiry, single use, limits | ✅ | ✅ Resend API mocked | **Blocked** — no Resend key or verified domain | **Blocked** |
 | **Real e-mail delivery** | — | — | **Blocked — never tested** | **Blocked — never tested** |
@@ -54,11 +54,19 @@ How each area was verified:
 
 Both Docker images built and started first time. One setting was wrong and is corrected: `TRUSTED_PROXY_HOPS` must be `2` on Railway, not `1`. With `1` every visitor appeared to the API as the same Railway address and would have shared a single rate-limit allowance.
 
-**Deployed-site journey** (`e2e/production.mjs`, real browser, fresh account): 34 passed, 0 failed, 3 blocked. The blocked steps are e-mail verification, completing a password reset, and checkout through to cancellation.
+**Deployed-site journey** (`e2e/production.mjs`, real browser, fresh account each run): 34 checks, plus three steps that cannot run yet (e-mail verification, completing a password reset, checkout through to cancellation). Every check has passed on the live site, but **no single run after the final merge was fully green**:
+
+| Run | Passed / failed / blocked | What failed |
+|---|---|---|
+| Before the v0.3.1 merge | 34 / 0 / 3 | — |
+| After the merge, first | 33 / 1 / 3 | Sign-in rate-limit check. The test machine's traffic left through two addresses, so its 30 attempts never reached 20 on one. Measured directly afterwards: of 200 attempts, 40 were accepted and 160 refused with 429 and `Retry-After` |
+| After the merge, second | 33 / 1 / 3 | Password-reset comparison. Five reset requests an hour are allowed per address and the earlier runs had used them, which is the likely cause; the script did not record the second status. Checked directly afterwards: identical 202 responses for a known and an unknown address |
+
+The script now makes 45 sign-in attempts and reports a used-up reset allowance as inconclusive instead of a failure. A clean run is still owed once the hourly limits have reset.
 
 **Data:** 234 repositories from nine live GitHub searches; three more searches are still queued after GitHub's anonymous rate limit. No demonstration fixtures are loaded.
 
-**Test accounts left in the database** (all `@example.com`, unverified, Free): `persist-1794648557`, `e2e-prod-1794648968439`, `e2e-prod-other-1794648968439`, `e2e-prod-1794649035661`, `e2e-prod-other-1794649035661`, plus any from later runs of the journey. They can be deleted once a database connection is available.
+**Test accounts left in the database** (all `@example.com`, unverified, Free): `persist-1794648557`, `e2e-prod-1794648968439`, `e2e-prod-other-1794648968439`, `e2e-prod-1794649035661`, `e2e-prod-other-1794649035661`, `e2e-prod-1794649704556`, `e2e-prod-other-1794649704556`, `e2e-prod-1794649818555`, `e2e-prod-other-1794649818555`, plus any from later runs of the journey. They can be deleted once a database connection is available.
 
 ## Verification performed in session 3
 

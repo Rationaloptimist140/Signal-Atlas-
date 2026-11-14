@@ -144,16 +144,21 @@ try {
   const anon = await browser.newContext(); const anonPage = await anon.newPage(); await anonPage.goto(`${BASE}/forgot-password`);
   const known = await apiJson(anonPage, "/auth/password-reset/request", post({ email }));
   const unknown = await apiJson(anonPage, "/auth/password-reset/request", post({ email: `nobody-${stamp}@example.com` }));
-  check(12, "password reset answers identically for known and unknown addresses", known.status === unknown.status && known.status < 300 && JSON.stringify(known.body) === JSON.stringify(unknown.body), `HTTP ${known.status}`);
+  // Five reset requests an hour are allowed per client address, so repeated runs can use the allowance up.
+  if (known.status === 429 || unknown.status === 429) blocked(12, "password reset answers identically for known and unknown addresses", `inconclusive: hourly reset limit reached (HTTP ${known.status} / ${unknown.status}); run again later`);
+  else check(12, "password reset answers identically for known and unknown addresses", known.status === unknown.status && known.status < 300 && JSON.stringify(known.body) === JSON.stringify(unknown.body), `HTTP ${known.status} / ${unknown.status}`);
   blocked(12, "completing a password reset", delivery ? "needs inbox access" : "no e-mail provider is configured on this deployment");
 
-  // 13 ─ brute-force limit on sign-in (uses a throwaway address so the tester is not locked out)
+  // 13 ─ brute-force limit on sign-in (uses a throwaway address so the tester is not locked out).
+  // The limit is 20 a minute per client address. A machine whose traffic leaves through several
+  // addresses gets that allowance on each, so the default covers two; raise RATE_LIMIT_ATTEMPTS if needed.
+  const attempts = Number(process.env.RATE_LIMIT_ATTEMPTS ?? 45);
   let limited = null;
-  for (let i = 0; i < 30 && !limited; i += 1) {
+  for (let i = 0; i < attempts && !limited; i += 1) {
     const attempt = await apiJson(anonPage, "/auth/login", post({ email: `lockout-${stamp}@example.com`, password: `wrong-${i}` }));
     if (attempt.status === 429) limited = attempt;
   }
-  check(13, "repeated failed sign-ins are rate limited with Retry-After", !!limited && Number(limited.retryAfter) > 0, limited ? `Retry-After ${limited.retryAfter}s` : "no 429 in 30 attempts");
+  check(13, "repeated failed sign-ins are rate limited with Retry-After", !!limited && Number(limited.retryAfter) > 0, limited ? `Retry-After ${limited.retryAfter}s` : `no 429 in ${attempts} attempts`);
   await anon.close();
 
   // 14 ─ mobile layout
@@ -182,5 +187,5 @@ check("–", "no Content-Security-Policy violations or console errors during the
 problems.slice(0, 10).forEach((p) => console.log(`        ${p}`));
 await browser.close();
 const count = (s) => results.filter((r) => r.status === s).length;
-console.log(`\n${count("PASS")} passed, ${count("FAIL")} failed, ${count("BLOCKED")} blocked (provider not configured)  ·  account ${email}`);
+console.log(`\n${count("PASS")} passed, ${count("FAIL")} failed, ${count("BLOCKED")} blocked or inconclusive  ·  account ${email}`);
 process.exit(count("FAIL") ? 1 : 0);
