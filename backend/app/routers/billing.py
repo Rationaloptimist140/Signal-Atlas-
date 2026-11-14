@@ -6,10 +6,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.database import get_db
-from app.deps import Principal, client_ip, get_session_principal, require_owner
+from app.deps import (
+    Principal,
+    client_ip,
+    get_session_principal,
+    limit_action,
+    public_rate_limit,
+    require_admin,
+    require_owner,
+)
 from app.models import Competitor, Organisation, Payment, User, WatchlistItem, utcnow
 from app.plans import PLAN_ORDER, all_plans, get_plan
-from app.schemas import CheckoutIn
+from app.schemas import BillingSyncIn, CheckoutIn
 from app.services import billing
 from app.services.usage import audit, get_subscription, get_usage, org_plan
 
@@ -38,7 +46,7 @@ def _raise(exc: billing.BillingError):
     raise HTTPException(status_code=exc.status, detail={"code": exc.code, "message": str(exc)}) from exc
 
 
-@router.get("/plans", summary="Plans, prices and entitlements (public)")
+@router.get("/plans", summary="Plans, prices and entitlements (public)", dependencies=[Depends(public_rate_limit)])
 async def plans() -> dict:
     catalogue = all_plans()
     return {"plans": [catalogue[k].to_dict() for k in PLAN_ORDER], "intervals": ["month", "year"], "billing": _billing_state(),
@@ -76,6 +84,7 @@ async def subscription(principal: Principal = Depends(get_session_principal), db
 @router.post("/checkout", summary="Start hosted card checkout for a plan (owner only)")
 async def checkout(body: CheckoutIn, request: Request, principal: Principal = Depends(require_owner), db: AsyncSession = Depends(get_db)) -> dict:
     settings = get_settings()
+    await limit_action(principal, "checkout", 10, 3600)
     sub = await get_subscription(db, principal.organisation_id)
     plan = get_plan(body.plan)
     if settings.stripe_configured:
@@ -85,7 +94,7 @@ async def checkout(body: CheckoutIn, request: Request, principal: Principal = De
         user = await db.get(User, principal.user.id)
         base = settings.frontend_url.rstrip("/")
         try:
-            session = await billing.StripeProvider().create_checkout(org, user, sub, plan, body.interval, f"{base}/settings?tab=billing&checkout=success", f"{base}/settings?tab=billing&checkout=cancelled")
+            session = await billing.StripeProvider().create_checkout(org, user, sub, plan, body.interval, f"{base}/settings?tab=billing&checkout=success&session_id={{CHECKOUT_SESSION_ID}}", f"{base}/settings?tab=billing&checkout=cancelled")
         except billing.BillingError as exc:
             _raise(exc)
         if sub.status in ("expired", "pending") or sub.plan == "free":
@@ -101,6 +110,7 @@ async def checkout(body: CheckoutIn, request: Request, principal: Principal = De
 
 
 async def _set_cancel(db: AsyncSession, principal: Principal, cancel: bool, request: Request) -> dict:
+    await limit_action(principal, "subscription-change", 20, 3600)
     sub = await get_subscription(db, principal.organisation_id)
     if sub.provider == "stripe" and sub.provider_subscription_id:
         try:
@@ -133,6 +143,19 @@ async def cancel(request: Request, principal: Principal = Depends(require_owner)
 @router.post("/resume", summary="Undo a scheduled cancellation")
 async def resume(request: Request, principal: Principal = Depends(require_owner), db: AsyncSession = Depends(get_db)) -> dict:
     return await _set_cancel(db, principal, False, request)
+
+
+@router.post("/sync", summary="Refresh the subscription from the payment provider (after checkout, or if a webhook was missed)")
+async def sync(body: BillingSyncIn, principal: Principal = Depends(require_admin), db: AsyncSession = Depends(get_db)) -> dict:
+    await limit_action(principal, "billing-sync", 30, 3600)
+    try:
+        outcome = await billing.sync_from_provider(db, principal.organisation_id, body.session_id)
+    except billing.BillingError as exc:
+        _raise(exc)
+    sub = await get_subscription(db, principal.organisation_id)
+    plan = await org_plan(db, principal.organisation_id)
+    await db.commit()
+    return {"outcome": outcome, "status": sub.status, "plan": plan.key}
 
 
 @router.post("/portal", summary="Open the provider's billing portal (update card, invoices)")

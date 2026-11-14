@@ -1,94 +1,149 @@
 # Deployment (Railway)
 
-> Nothing has been deployed and no Railway resource has been created. These are the steps to follow when you are ready. Creating services on Railway may incur cost on your plan — review before proceeding.
+> **Nothing has been deployed and no Railway resource exists.** This is the checklist to follow when you decide to deploy. Railway bills by usage: review its pricing before creating services.
 
-## Services
+Railway's per-service `railway.json` ("Config as Code") is deprecated and is not read for new services, so this project ships none. Settings below are entered in the Railway dashboard. (Railway's replacement, `.railway/railway.ts`, can be added later with `railway config pull` once the project exists.)
 
-| Service | Root directory | Config | Start |
+## 1. Resources
+
+| Resource | Type | Needed? |
+|---|---|---|
+| PostgreSQL | Railway database | Required |
+| `api` | Service from this repo | Required |
+| `web` | Service from this repo | Required |
+| `worker` | Service from this repo | Recommended: scheduled syncs, discovery, AI enrichment, housekeeping. Without it set `JOBS_INLINE=true` on `api` |
+| Redis | Railway database | Recommended: shared rate limiting. Without it set `RATE_LIMIT_BACKEND=memory` on `api` and run exactly one `api` instance |
+
+Smallest footprint: PostgreSQL + `api` + `web` (three services).
+
+## 2. Service settings
+
+| Setting | `api` | `worker` | `web` |
 |---|---|---|---|
-| `api` | `backend` | `backend/railway.json` | `alembic upgrade head && uvicorn …` (in the Dockerfile) |
-| `worker` | `backend` | `backend/railway.worker.json` | `python -m app.worker` |
-| `web` | `frontend` | `frontend/railway.json` | `next start` |
-| PostgreSQL | Railway plugin | — | — |
-| Redis | *not required* | — | Add only when running more than one `api` instance |
+| Source | this repository, branch `main` | same | same |
+| Root Directory | `/backend` | `/backend` | `/frontend` |
+| Builder | Dockerfile (detected) | Dockerfile | Dockerfile |
+| Custom Start Command | *(leave empty)* | `python -m app.worker` | *(leave empty)* |
+| Healthcheck Path | `/health/ready` | *(none)* | `/login` |
+| Healthcheck Timeout | 120 | — | 120 |
+| Restart Policy | On failure | On failure | On failure |
+| Public domain | **No** | No | **Yes** (generate one) |
+| Replicas | 1 (more only with Redis) | 1 | 1 |
 
-Minimum footprint: PostgreSQL + `api` + `web`. Without `worker`, set `JOBS_INLINE=true` on `api`: syncs and reports run inside the request and scheduled monitoring/discovery does not run. Add `worker` when you want automatic updates.
+The `api` image runs `alembic upgrade head` before starting the server: migrations are applied on every deploy, are idempotent, and a failed migration stops the release before it takes traffic. `/health/ready` returns 503 if the database, or a configured Redis, is unreachable, which keeps a broken release from going live.
 
-## Steps
+The browser only ever talks to `web`; `web` proxies `/api/*` to `api` over Railway's private network. That is why `api` needs no public domain.
 
-1. **Create a project** on Railway and add the **PostgreSQL** plugin.
-2. **Create `api`** from this GitHub repository. Settings → Root Directory `backend`; Config-as-code path `backend/railway.json`.
-3. **Set variables on `api`:**
+## 3. Variables
 
-   | Variable | Value |
-   |---|---|
-   | `APP_ENV` | `production` |
-   | `SECRET_KEY` | 48+ random characters (`python -c "import secrets; print(secrets.token_urlsafe(48))"`) |
-   | `DATABASE_URL` | `${{Postgres.DATABASE_URL}}` |
-   | `FRONTEND_URL` | Public URL of the `web` service, e.g. `https://signal-atlas.up.railway.app` |
-   | `CORS_ORIGINS` | Same as `FRONTEND_URL` |
-   | `PLATFORM_ADMIN_EMAILS` | Your login email |
-   | `JOBS_INLINE` | `true` only if you run no worker |
-   | Optional | `GITHUB_TOKEN`, `GITHUB_OAUTH_CLIENT_ID`, `GITHUB_OAUTH_CLIENT_SECRET`, `LLM_PROVIDER`, `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`, `LLM_MODEL` |
+### `api` and `worker` (use one shared variable group linked to both)
 
-   Add them as **service variables** on `api` (and the same set on `worker`), not as a shared group that is not linked to the service.
-4. **Create `worker`** from the same repository: Root Directory `backend`, Config path `backend/railway.worker.json`, same variables as `api` (a Railway shared variable group linked to both services works well).
-5. **Create `web`**: Root Directory `frontend`, Config path `frontend/railway.json`. Variable `BACKEND_URL` = the **private** URL of `api`, e.g. `http://${{api.RAILWAY_PRIVATE_DOMAIN}}:${{api.PORT}}`. It must be available at **build** time (Railway passes service variables to Docker builds; the Dockerfile declares `ARG BACKEND_URL`).
-6. **Generate a public domain** for `web` only. The `api` service does not need one; the browser reaches it through the `web` proxy.
-7. **Deploy.** The API runs `alembic upgrade head` on start.
-8. **Verify:** open `https://<web-domain>/login`, create an account, then check `Settings → Integrations` and `Settings → Data & jobs`. `GET https://<web-domain>/api/docs` shows the API reference.
+| Variable | Value | Notes |
+|---|---|---|
+| `APP_ENV` | `production` | Turns on the safety checks below |
+| `SECRET_KEY` | 48+ random characters | `python -c "import secrets; print(secrets.token_urlsafe(48))"` |
+| `DATABASE_URL` | `${{Postgres.DATABASE_URL}}` | `postgres://` is converted automatically |
+| `FRONTEND_URL` | `https://<web public domain>` | Used in e-mail links and Stripe return URLs |
+| `CORS_ORIGINS` | same as `FRONTEND_URL` | |
+| `PORT` | `8000` | Fixed port so `web` can reach `api` privately |
+| `REDIS_URL` | `${{Redis.REDIS_URL}}` | Or `RATE_LIMIT_BACKEND=memory` instead |
+| `TRUSTED_PROXY_HOPS` | `1` | See "After the first deploy" |
+| `PLATFORM_ADMIN_EMAILS` | your login e-mail | Who may run discovery and demo tools |
+| `JOBS_INLINE` | `true` only if there is no `worker` | |
+| E-mail | `EMAIL_PROVIDER=resend`, `RESEND_API_KEY`, `EMAIL_FROM` | Section 4 |
+| Payments | `BILLING_PROVIDER=stripe`, `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` | Section 5 (test mode) |
+| Optional | `GITHUB_TOKEN`, `GITHUB_OAUTH_CLIENT_ID`, `GITHUB_OAUTH_CLIENT_SECRET`, `LLM_PROVIDER`, `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` | |
 
-## Email delivery (verification and password reset)
+Add variables to the services themselves (or a shared group **linked** to them), not to an unlinked group.
 
-Railway's Hobby plan blocks outbound SMTP, so Signal Atlas sends through an HTTPS API (Resend).
+With `APP_ENV=production` the API **refuses to start** if: `SECRET_KEY` is the default or shorter than 32 characters; `DATABASE_URL` is SQLite; `FRONTEND_URL`/`CORS_ORIGINS` are not public `https://` URLs; secure cookies are disabled; neither `REDIS_URL` nor `RATE_LIMIT_BACKEND=memory` is set; demo seeding or development plan switching is on; or a live Stripe key is supplied. The deploy log states which rule failed.
 
-1. Create a Resend account (the free tier is enough to start) and add a **sending domain** you control. Resend shows the DNS records to add at your registrar; sending to other people's addresses only works after the domain shows as verified.
-2. Set on `api` and `worker`: `EMAIL_PROVIDER=resend`, `RESEND_API_KEY=...`, `EMAIL_FROM="Signal Atlas <no-reply@your-verified-domain>"`.
-3. Without these, no email is sent: the app says so, and accounts cannot be verified. `EMAIL_VERIFICATION_REQUIRED=false` turns the gate off if you need to run without email for a while.
+### `web`
 
-## Card payments (Stripe, test mode)
+| Variable | Value | Notes |
+|---|---|---|
+| `BACKEND_URL` | `http://${{api.RAILWAY_PRIVATE_DOMAIN}}:8000` | Needed at **build** time as well as runtime (the Dockerfile declares it as a build argument) |
 
-1. In the Stripe dashboard switch to **Test mode** and copy the secret key (`sk_test_...`). A live key makes the API refuse to start.
-2. Developers → Webhooks → add endpoint `https://<web-domain>/api/v1/billing/webhooks/stripe` with events: `checkout.session.completed`, `customer.subscription.created`, `customer.subscription.updated`, `customer.subscription.deleted`, `invoice.paid`, `invoice.payment_failed`, `charge.refunded`. Copy the signing secret (`whsec_...`).
-3. Set on `api`: `BILLING_PROVIDER=stripe`, `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`.
-4. No products or prices need creating in Stripe: checkout sends the amount from the plan catalogue. Enable the Stripe customer portal (Settings → Billing → Customer portal) for "Manage card and invoices".
-5. Test with card `4242 4242 4242 4242`. The plan changes when the webhook arrives, not on the browser redirect.
+## 4. E-mail delivery (Resend)
 
-## GitHub integrations (optional)
+Railway's Hobby plan blocks outbound SMTP; Signal Atlas sends through Resend's HTTPS API, which works on every plan.
 
-**Server token (recommended first):** GitHub → Settings → Developer settings → Fine-grained tokens → *Public repositories (read-only)*, no extra permissions. Set as `GITHUB_TOKEN`. Raises the limit from 60 to 5,000 requests/hour and enables issue and pull-request totals.
+1. Create a Resend account (free tier: 3,000 e-mails a month, 100 a day).
+2. **Domains → Add Domain.** Use a subdomain you control, for example `mail.flanuer.com`. Resend then shows the DNS records to create. Add them at the domain's DNS host exactly as shown. For `mail.flanuer.com` (DNS hosted at Porkbun) expect records of this shape:
 
-**OAuth app:** GitHub → Settings → Developer settings → OAuth Apps → New.
-* Homepage URL: `https://<web-domain>`
-* Authorization callback URL: `https://<web-domain>/api/v1/auth/github/callback`
-* Set `GITHUB_OAUTH_CLIENT_ID` and `GITHUB_OAUTH_CLIENT_SECRET` on `api`.
-The app requests `read:user user:email` only.
+   | Type | Host (relative to `flanuer.com`) | Value |
+   |---|---|---|
+   | MX | `send.mail` | `feedback-smtp.<region>.amazonses.com`, priority 10 |
+   | TXT | `send.mail` | `v=spf1 include:amazonses.com ~all` |
+   | TXT | `resend._domainkey.mail` | DKIM public key, unique to your account (copy from Resend) |
+   | TXT (recommended) | `_dmarc.mail` | `v=DMARC1; p=none;` |
 
-## First data
+   Newer Resend accounts may be given CNAME records instead of the MX/TXT pair. **Always use the records in your own Resend dashboard**; the table only shows what to expect. As of 14 November 2026 `flanuer.com` and `mail.flanuer.com` have no MX, SPF, DKIM or DMARC records, so nothing has been set up yet.
+3. Wait until the domain shows **Verified** in Resend (usually minutes, up to 72 hours).
+4. Create an API key and set `EMAIL_PROVIDER=resend`, `RESEND_API_KEY`, and `EMAIL_FROM="Signal Atlas <no-reply@mail.flanuer.com>"` on `api` and `worker`.
+5. Test from the `api` service shell:
 
-* **Live:** `Settings → Data & jobs → Run discovery` (needs the worker), or `Repository Intelligence → Search GitHub`.
-* **Demo:** `Settings → Data & jobs → Load demo fixtures`, or set `SEED_DEMO_DATA=true` before the first start.
+   ```bash
+   python -m app.cli doctor --send-test-email you@your-inbox.example
+   ```
 
-## Database backups
+   It reports whether Resend accepts the key, whether the sending domain is verified, and sends one test message. Confirm the message arrives (check spam).
 
-Railway backups depend on your plan. For a free manual export from your own machine:
+Until this is done no e-mail is sent, the app says so, and accounts cannot be verified. `EMAIL_VERIFICATION_REQUIRED=false` switches the verification gate off if you need to run without e-mail for a period.
+
+## 5. Card payments (Stripe, test mode only)
+
+1. In the Stripe dashboard switch to **Test mode**; copy the secret key (`sk_test_…`). A live key makes the API refuse to start.
+2. **Developers → Webhooks → Add endpoint**
+   * URL: `https://<web public domain>/api/v1/billing/webhooks/stripe`
+   * Events: `checkout.session.completed`, `customer.subscription.created`, `customer.subscription.updated`, `customer.subscription.deleted`, `invoice.paid`, `invoice.payment_failed`, `invoice_payment.paid`, `charge.refunded`
+   * Copy the signing secret (`whsec_…`).
+3. Set on `api` and `worker`: `BILLING_PROVIDER=stripe`, `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`.
+4. **Settings → Billing → Customer portal:** activate it (used by "Manage card and invoices").
+5. No products or prices need creating: checkout sends the amount from the plan catalogue (`backend/app/plans.py`, overridable with `PLAN_OVERRIDES_JSON`).
+6. Check the configuration, then make one test purchase:
+
+   ```bash
+   python -m app.cli doctor        # verifies the key, test mode, and the webhook endpoint and its events
+   ```
+
+   In the app: **Settings → Plan & billing → Subscribe to Pro**, pay with card `4242 4242 4242 4242`, any future expiry and CVC. On return the plan should show **Pro · Active**, the payment should appear under Payment history, and **API & Developers → Create API key** should now work. Then **Cancel subscription** and confirm it shows "Cancels at period end". Card `4000 0000 0000 0341` attaches successfully but fails on renewal, for testing the failed-payment state.
+
+The plan is activated by Stripe's confirmation (webhook, or a direct check with Stripe when the customer returns), never by the browser redirect alone.
+
+## 6. GitHub integrations (optional)
+
+**Server token:** a fine-grained token with *Public repositories (read-only)* and no other permissions, as `GITHUB_TOKEN`. Raises the limit from 60 to 5,000 requests an hour and enables issue and pull-request totals.
+
+**OAuth app:** Homepage `https://<web domain>`, callback `https://<web domain>/api/v1/auth/github/callback`; set `GITHUB_OAUTH_CLIENT_ID` and `GITHUB_OAUTH_CLIENT_SECRET`. Requests `read:user user:email` only.
+
+## 7. After the first deploy
+
+1. Open `https://<web domain>/` — the landing page should load; `…/api/docs` shows the API reference.
+2. In the `api` service shell run `python -m app.cli doctor`. Every line should be `PASS`, or a `WARN` you have chosen to accept.
+3. Create your account, sign in, and open **Settings → Data & jobs**. Under "Rate limiting and proxy check", *Your address as seen by the API* must be your own public IP address. If it shows a private or shared address, change `TRUSTED_PROXY_HOPS` (0 = use the connection address, 1 = one trusted proxy, 2 = two) and redeploy. Per-IP rate limits depend on this being right.
+4. Load data: **Settings → Data & jobs → Run discovery** (needs `worker`), or **Repository Intelligence → Search GitHub**.
+
+## 8. Backups and rollback
+
+Railway's own backups depend on your plan. A free manual export from your own machine:
 
 ```
-pg_dump "<External DATABASE_URL>" -Fc -f signal_atlas.dump
+pg_dump "<external DATABASE_URL>" -Fc -f signal_atlas.dump
 ```
 
-## Rollback
+Take one before any deploy that includes a new migration. To roll back code, redeploy a previous deployment in Railway. Migrations `0001`–`0002` are additive; `alembic downgrade -1` reverses the latest one if older code must run.
 
-Railway → service → Deployments → **Redeploy** a previous deployment. Migrations are additive in v0.1; to revert the schema run `alembic downgrade -1` against the database before redeploying older code.
+## 9. Go-live checklist
 
-## Production checklist
-
-- [ ] `APP_ENV=production` and a unique `SECRET_KEY` (the API refuses to start otherwise)
-- [ ] `FRONTEND_URL` / `CORS_ORIGINS` match the public web domain (HTTPS)
-- [ ] `PLATFORM_ADMIN_EMAILS` set
-- [ ] `ALLOW_SELF_SERVE_PLAN_CHANGE` unset (the API refuses `true` in production)
-- [ ] Email provider configured with a verified sending domain
-- [ ] Stripe test-mode key and webhook secret set; a test checkout completed end to end
-- [ ] Only `web` has a public domain
-- [ ] `GITHUB_TOKEN` set if you expect more than light usage
+- [ ] PostgreSQL, `api`, `web` created (plus `worker` and Redis if chosen); only `web` has a public domain
+- [ ] `APP_ENV=production`; the `api` deploy log shows no "Unsafe production configuration" error
+- [ ] `python -m app.cli doctor` passes on the `api` service
+- [ ] "Your address as seen by the API" shows your real IP
+- [ ] Resend domain verified; test e-mail received; a new sign-up receives its confirmation e-mail
+- [ ] Stripe test checkout completed end to end; cancellation tested
+- [ ] `GITHUB_TOKEN` set if you expect more than light use
+- [ ] CI workflow installed and green (see README)
+- [ ] Database export taken
 - [ ] Privacy notice and terms published before inviting users (see SECURITY.md)
+- [ ] Live payments stay off until the Stripe test run and tax handling are complete

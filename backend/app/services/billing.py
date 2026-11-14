@@ -32,6 +32,11 @@ from app.services.usage import audit, get_subscription
 log = get_logger("billing")
 
 WEBHOOK_TOLERANCE_SECONDS = 300
+WEBHOOK_PATH = "/api/v1/billing/webhooks/stripe"
+REQUIRED_STRIPE_EVENTS = (
+    "checkout.session.completed", "customer.subscription.created", "customer.subscription.updated", "customer.subscription.deleted",
+    "invoice.paid", "invoice.payment_failed", "invoice_payment.paid", "charge.refunded",
+)
 
 
 class BillingError(Exception):
@@ -161,6 +166,24 @@ class StripeProvider:
             log.error("stripe_error", path=path, status=resp.status_code, error_type=(body.get("error") or {}).get("type"))
             raise BillingError((body.get("error") or {}).get("message") or "The payment provider rejected the request.", 502, "billing_provider_error")
         return body
+
+    async def _get(self, path: str, params: dict | None = None) -> dict:
+        try:
+            async with httpx.AsyncClient(timeout=20.0, transport=self._transport) as http:
+                resp = await http.get(f"{self._base}{path}", headers={"Authorization": f"Bearer {self._key}"}, params=params)
+        except httpx.HTTPError as exc:
+            raise BillingError("The payment provider could not be reached. Please try again.", 502, "billing_provider_unavailable") from exc
+        body = resp.json() if resp.content else {}
+        if resp.status_code >= 300:
+            log.error("stripe_error", path=path.split("/cs_")[0].split("/sub_")[0], status=resp.status_code, error_type=(body.get("error") or {}).get("type"))
+            raise BillingError((body.get("error") or {}).get("message") or "The payment provider rejected the request.", 502, "billing_provider_error")
+        return body
+
+    async def get_checkout_session(self, session_id: str) -> dict:
+        return await self._get(f"/v1/checkout/sessions/{session_id}")
+
+    async def get_subscription(self, subscription_id: str) -> dict:
+        return await self._get(f"/v1/subscriptions/{subscription_id}")
 
     async def create_checkout(self, org: Organisation, user: User, sub: Subscription, plan: Plan, interval: str, success_url: str, cancel_url: str) -> CheckoutSession:
         amount = plan.price_minor(interval)
@@ -325,14 +348,34 @@ async def apply_stripe_event(session: AsyncSession, event: dict) -> tuple[str, i
             await mark_past_due(session, sub)
         return "processed", sub.organisation_id
 
+    if kind == "invoice_payment.paid":
+        # Newer Stripe API versions no longer put the charge or payment intent on the invoice; this event links them.
+        payment_ref = (obj.get("payment") or {})
+        intent = payment_ref.get("payment_intent") or payment_ref.get("charge")
+        payment = await session.scalar(select(Payment).where(Payment.provider == "stripe", Payment.provider_payment_id == obj.get("invoice"))) if obj.get("invoice") else None
+        if payment is None or not intent:
+            return "ignored", None
+        payment.provider_charge_id = payment.provider_charge_id or intent
+        return "processed", payment.organisation_id
+
     if kind == "charge.refunded":
         payment = None
         if obj.get("invoice"):
             payment = await session.scalar(select(Payment).where(Payment.provider == "stripe", Payment.provider_payment_id == obj["invoice"]))
-        if payment is None and obj.get("id"):
-            payment = await session.scalar(select(Payment).where(Payment.provider == "stripe", Payment.provider_charge_id == obj["id"]))
+        for ref in (obj.get("id"), obj.get("payment_intent")):
+            if payment is None and ref:
+                payment = await session.scalar(select(Payment).where(Payment.provider == "stripe", Payment.provider_charge_id == ref))
+        if payment is None and obj.get("customer"):
+            # Last resort when the provider sent no link between charge and invoice: the customer's most recent
+            # payment of exactly the charged amount.
+            sub = await session.scalar(select(Subscription).where(Subscription.provider_customer_id == obj["customer"]))
+            if sub is not None:
+                payment = await session.scalar(
+                    select(Payment).where(Payment.organisation_id == sub.organisation_id, Payment.provider == "stripe", Payment.amount_minor == int(obj.get("amount") or -1),
+                                          Payment.status.in_(("succeeded", "partially_refunded"))).order_by(Payment.created_at.desc()))
         if payment is None:
             return "unknown_payment", None
+        payment.provider_charge_id = payment.provider_charge_id or obj.get("id")
         payment.refunded_minor = int(obj.get("amount_refunded") or 0)
         payment.status = "refunded" if payment.refunded_minor >= payment.amount_minor else "partially_refunded"
         await audit(session, "payment.refunded", organisation_id=payment.organisation_id, target_type="payment", target_id=payment.id,
@@ -367,3 +410,43 @@ async def process_stripe_webhook(session: AsyncSession, payload: bytes, signatur
     await session.commit()
     log.info("billing_webhook", event_type=event.get("type"), outcome=outcome)
     return {"status": outcome}
+
+
+async def sync_from_provider(session: AsyncSession, organisation_id: int, checkout_session_id: str | None = None) -> str:
+    """Pull the current state from Stripe and apply it - the same code path as the webhooks.
+
+    Used when the customer returns from checkout (the webhook may not have arrived yet) and as a manual
+    "refresh" if a webhook was missed. A checkout session is only accepted if it was created for this organisation.
+    """
+    provider = StripeProvider()
+    sub = await get_subscription(session, organisation_id)
+    outcome = "unchanged"
+    if checkout_session_id:
+        checkout = await provider.get_checkout_session(checkout_session_id)
+        if str(checkout.get("client_reference_id")) != str(organisation_id):
+            raise BillingError("That checkout session does not belong to this workspace.", 404, "not_found")
+        if checkout.get("status") == "complete":
+            outcome, _ = await apply_stripe_event(session, {"type": "checkout.session.completed", "data": {"object": checkout}})
+    if sub.provider == "stripe" and sub.provider_subscription_id:
+        remote = await provider.get_subscription(sub.provider_subscription_id)
+        remote.setdefault("metadata", {}).setdefault("organisation_id", str(organisation_id))
+        kind = "customer.subscription.deleted" if remote.get("status") == "canceled" else "customer.subscription.updated"
+        outcome, _ = await apply_stripe_event(session, {"type": kind, "data": {"object": remote}})
+    await session.commit()
+    return outcome
+
+
+async def expire_lapsed(session: AsyncSession, now: dt.datetime | None = None) -> int:
+    """Housekeeping: move subscriptions whose paid access has ended to ``expired`` (entitlements already ignore them)."""
+    now = now or utcnow()
+    grace = dt.timedelta(days=get_settings().billing_grace_days)
+    lapsed = 0
+    for sub in (await session.scalars(select(Subscription).where(Subscription.status.in_(("past_due", "cancelled", "active")), Subscription.plan != "free"))).all():
+        ended = ((sub.status == "past_due" and sub.grace_until is not None and now > sub.grace_until)
+                 or (sub.status == "cancelled" and sub.current_period_end is not None and now > sub.current_period_end)
+                 or (sub.status == "active" and sub.provider != "manual" and sub.current_period_end is not None and now > sub.current_period_end + grace))
+        if ended:
+            await end_subscription(session, sub, f"lapsed while {sub.status}")
+            lapsed += 1
+    await session.commit()
+    return lapsed

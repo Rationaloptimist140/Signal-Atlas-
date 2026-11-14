@@ -1,4 +1,8 @@
-"""Single-use, hashed, expiring tokens for e-mail verification and password reset."""
+"""Single-use, hashed, expiring tokens for e-mail verification and password reset.
+
+Links carry the token in the URL *fragment* (``#token=...``). Browsers never send fragments to a
+server, so tokens cannot appear in web-server, proxy or platform access logs.
+"""
 
 import datetime as dt
 
@@ -39,12 +43,17 @@ async def consume_token(session: AsyncSession, raw: str, purpose: str) -> User |
 async def send_verification(session: AsyncSession, user: User, ip: str | None = None) -> str:
     settings = get_settings()
     raw = await issue_token(session, user, VERIFY, ip)
-    url = f"{settings.frontend_url.rstrip('/')}/verify-email?token={raw}"
+    url = f"{settings.frontend_url.rstrip('/')}/verify-email#token={raw}"
     return await mailer.get_mailer().send(mailer.verification_email(user.email, user.full_name.split(" ")[0] if user.full_name else "", url, settings.verification_token_hours))
 
 
 async def send_password_reset(session: AsyncSession, user: User, ip: str | None = None) -> str:
     settings = get_settings()
     raw = await issue_token(session, user, RESET, ip)
-    url = f"{settings.frontend_url.rstrip('/')}/reset-password?token={raw}"
+    url = f"{settings.frontend_url.rstrip('/')}/reset-password#token={raw}"
     return await mailer.get_mailer().send(mailer.password_reset_email(user.email, url, settings.password_reset_token_minutes))
+
+
+async def send_account_exists(user: User) -> str:
+    settings = get_settings()
+    return await mailer.get_mailer().send(mailer.account_exists_email(user.email, f"{settings.frontend_url.rstrip('/')}/login"))

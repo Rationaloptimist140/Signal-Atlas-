@@ -14,7 +14,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app import ratelimit
 from app.config import get_settings
 from app.database import get_db
-from app.deps import Principal, client_ip, get_session_principal
+from app.deps import (
+    Principal,
+    client_ip,
+    enforce_limit,
+    get_session_principal,
+    limit_action,
+    public_rate_limit,
+)
 from app.logging_config import get_logger
 from app.models import (
     GitHubAccount,
@@ -29,6 +36,7 @@ from app.models import (
 )
 from app.schemas import (
     ChangePasswordIn,
+    EmailIn,
     LoginIn,
     PasswordResetConfirmIn,
     PasswordResetRequestIn,
@@ -122,40 +130,56 @@ async def me_payload(db: AsyncSession, user: User, organisation_id: int, role: s
     }
 
 
-@router.get("/providers", summary="Which sign-in methods are available on this instance")
+@router.get("/providers", summary="Which sign-in methods are available on this instance", dependencies=[Depends(public_rate_limit)])
 async def providers() -> dict:
     settings = get_settings()
     return {"email_password": True, "github_oauth": settings.github_oauth_configured, "registration_open": settings.allow_registration,
-            "email_delivery": settings.email_delivery_configured,
+            "email_delivery": settings.email_delivery_configured, "login_requires_verified_email": settings.login_requires_verified_email,
             "github_scopes": settings.github_oauth_scopes if settings.github_oauth_configured else None}
 
 
-@router.post("/register", status_code=201, summary="Create an account and workspace")
-async def register(body: RegisterIn, request: Request, response: Response, db: AsyncSession = Depends(get_db)) -> dict:
+REGISTER_RESPONSE = {
+    "status": "accepted",
+    "message": "If this email address is not already registered, your account has been created and a confirmation email is on its way.",
+}
+
+
+@router.post("/register", status_code=202, summary="Create an account and workspace (the response never reveals whether the address is already registered)")
+async def register(body: RegisterIn, request: Request, db: AsyncSession = Depends(get_db)) -> dict:
     settings = get_settings()
     if not settings.allow_registration:
         raise HTTPException(status_code=403, detail={"code": "registration_closed", "message": "Registration is currently closed."})
-    allowed, retry = await ratelimit.hit(f"register:{client_ip(request)}", 10, 3600)
-    if not allowed:
-        raise HTTPException(status_code=429, detail={"code": "rate_limited", "message": "Too many sign-up attempts. Try again later."}, headers={"Retry-After": str(retry)})
+    ip = client_ip(request)
+    await enforce_limit(f"register:{ip}", 10, 3600, "Too many sign-up attempts. Try again later.")
     email = body.email.lower()
-    if await db.scalar(select(User.id).where(func.lower(User.email) == email)):
-        raise HTTPException(status_code=409, detail={"code": "email_taken", "message": "An account with this email already exists."})
-    user, org = await create_user_with_workspace(db, email, body.full_name.strip(), hash_password(body.password), body.organisation_name)
-    session = await create_session(db, user, org.id, request, response)
-    await audit(db, "user.registered", organisation_id=org.id, user_id=user.id, ip=client_ip(request))
-    delivery = await account_tokens.send_verification(db, user, client_ip(request))
+    password_hash = hash_password(body.password)  # always hashed, so both branches cost the same
+    existing = await db.scalar(select(User).where(func.lower(User.email) == email))
+    if existing is None:
+        user, org = await create_user_with_workspace(db, email, body.full_name.strip(), password_hash, body.organisation_name)
+        await audit(db, "user.registered", organisation_id=org.id, user_id=user.id, ip=ip)
+        await account_tokens.send_verification(db, user, ip)
+    else:
+        # Same response, no session, nothing changed. The owner of the address is told by e-mail instead.
+        notify, _ = await ratelimit.hit(f"register-existing:{email}", 3, 3600, sensitive=True)
+        if notify and existing.is_active:
+            await account_tokens.send_account_exists(existing)
+        await audit(db, "user.register_existing_email", user_id=existing.id, ip=ip)
     await db.commit()
-    return dict(await me_payload(db, user, org.id, Role.OWNER.value, session.csrf_token), verification_email=delivery)
+    return dict(REGISTER_RESPONSE, delivery_configured=settings.email_delivery_configured, sign_in_requires_confirmation=settings.login_requires_verified_email)
+
+
+def _invalid_credentials() -> HTTPException:
+    message = "Invalid email or password."
+    if get_settings().login_requires_verified_email:
+        message = "Invalid email or password, or the email address has not been confirmed yet."
+    return HTTPException(status_code=401, detail={"code": "invalid_credentials", "message": message})
 
 
 @router.post("/login", summary="Sign in with email and password")
 async def login(body: LoginIn, request: Request, response: Response, db: AsyncSession = Depends(get_db)) -> dict:
     ip = client_ip(request)
-    allowed, retry = await ratelimit.hit(f"login:{ip}", 20, 60)
-    if not allowed:
-        raise HTTPException(status_code=429, detail={"code": "rate_limited", "message": "Too many sign-in attempts. Try again shortly."}, headers={"Retry-After": str(retry)})
-    invalid = HTTPException(status_code=401, detail={"code": "invalid_credentials", "message": "Invalid email or password."})
+    await enforce_limit(f"login:{ip}", 20, 60, "Too many sign-in attempts. Try again shortly.")
+    invalid = _invalid_credentials()
     user = await db.scalar(select(User).where(func.lower(User.email) == body.email.lower()))
     if user is None:
         verify_password(body.password, _DUMMY_HASH)  # equalise timing so unknown emails are not detectable
@@ -171,6 +195,8 @@ async def login(body: LoginIn, request: Request, response: Response, db: AsyncSe
         await audit(db, "user.login_failed", user_id=user.id, ip=ip)
         await db.commit()
         raise invalid
+    if get_settings().login_requires_verified_email and user.email_verified_at is None:
+        raise invalid  # indistinguishable from a wrong password, so sign-up cannot be used to probe for accounts
     user.failed_logins, user.locked_until = 0, None
     if user.password_hash and needs_rehash(user.password_hash):
         user.password_hash = hash_password(body.password)
@@ -209,6 +235,7 @@ async def update_me(body: ProfileUpdateIn, principal: Principal = Depends(get_se
 
 @router.post("/change-password", status_code=204, summary="Change password and sign out other sessions")
 async def change_password(body: ChangePasswordIn, request: Request, principal: Principal = Depends(get_session_principal), db: AsyncSession = Depends(get_db)) -> None:
+    await limit_action(principal, "change-password", 5, 900)
     user = await db.get(User, principal.user.id)
     if user.password_hash and not verify_password(body.current_password, user.password_hash):
         raise HTTPException(status_code=400, detail={"code": "wrong_password", "message": "Current password is incorrect."})
@@ -234,9 +261,7 @@ async def request_verification(request: Request, principal: Principal = Depends(
     user = await db.get(User, principal.user.id)
     if user.email_verified_at is not None:
         return {"status": "already_verified"}
-    allowed, retry = await ratelimit.hit(f"verify:{user.id}", 3, 3600)
-    if not allowed:
-        raise HTTPException(status_code=429, detail={"code": "rate_limited", "message": "Verification email already sent. Please wait before requesting another."}, headers={"Retry-After": str(retry)})
+    await enforce_limit(f"verify:{user.id}", 3, 3600, "Verification email already sent. Please wait before requesting another.")
     delivery = await account_tokens.send_verification(db, user, client_ip(request))
     await audit(db, "user.verification_requested", organisation_id=principal.organisation_id, user_id=user.id, details={"delivery": delivery}, ip=client_ip(request))
     await db.commit()
@@ -246,11 +271,24 @@ async def request_verification(request: Request, principal: Principal = Depends(
                         "not_configured": "Email delivery is not configured on this instance, so no message was sent."}[delivery]}
 
 
+RESEND_RESPONSE = {"status": "accepted", "message": "If that address has an unconfirmed account, a new confirmation email has been sent."}
+
+
+@router.post("/verify-email/resend", status_code=202, summary="Resend the confirmation e-mail without a session (generic response)")
+async def resend_verification(body: EmailIn, request: Request, db: AsyncSession = Depends(get_db)) -> dict:
+    ip, email = client_ip(request), body.email.lower()
+    await enforce_limit(f"verify-resend-ip:{ip}", 5, 3600, "Too many requests. Try again later.")
+    email_ok, _ = await ratelimit.hit(f"verify-resend-email:{email}", 3, 3600, sensitive=True)
+    user = await db.scalar(select(User).where(func.lower(User.email) == email))
+    if email_ok and user is not None and user.is_active and user.email_verified_at is None:
+        await account_tokens.send_verification(db, user, ip)
+        await db.commit()
+    return dict(RESEND_RESPONSE, delivery_configured=get_settings().email_delivery_configured)
+
+
 @router.post("/verify-email/confirm", summary="Confirm an e-mail address with a single-use token")
 async def confirm_verification(body: TokenIn, request: Request, db: AsyncSession = Depends(get_db)) -> dict:
-    allowed, retry = await ratelimit.hit(f"verify-confirm:{client_ip(request)}", 20, 600)
-    if not allowed:
-        raise HTTPException(status_code=429, detail={"code": "rate_limited", "message": "Too many attempts."}, headers={"Retry-After": str(retry)})
+    await enforce_limit(f"verify-confirm:{client_ip(request)}", 20, 600, "Too many attempts.")
     user = await account_tokens.consume_token(db, body.token, account_tokens.VERIFY)
     if user is None:
         await db.commit()
@@ -267,10 +305,8 @@ RESET_RESPONSE = {"status": "accepted", "message": "If an account exists for tha
 @router.post("/password-reset/request", status_code=202, summary="Request a password-reset link (response never reveals whether the account exists)")
 async def request_password_reset(body: PasswordResetRequestIn, request: Request, db: AsyncSession = Depends(get_db)) -> dict:
     ip, email = client_ip(request), body.email.lower()
-    ip_ok, retry = await ratelimit.hit(f"reset-ip:{ip}", 5, 3600)
-    if not ip_ok:
-        raise HTTPException(status_code=429, detail={"code": "rate_limited", "message": "Too many reset requests. Try again later."}, headers={"Retry-After": str(retry)})
-    email_ok, _ = await ratelimit.hit(f"reset-email:{email}", 3, 3600)
+    await enforce_limit(f"reset-ip:{ip}", 5, 3600, "Too many reset requests. Try again later.")
+    email_ok, _ = await ratelimit.hit(f"reset-email:{email}", 3, 3600, sensitive=True)
     user = await db.scalar(select(User).where(func.lower(User.email) == email))
     if email_ok and user is not None and user.is_active:
         delivery = await account_tokens.send_password_reset(db, user, ip)
@@ -281,9 +317,7 @@ async def request_password_reset(body: PasswordResetRequestIn, request: Request,
 
 @router.post("/password-reset/confirm", summary="Set a new password with a single-use token; signs out every session")
 async def confirm_password_reset(body: PasswordResetConfirmIn, request: Request, response: Response, db: AsyncSession = Depends(get_db)) -> dict:
-    allowed, retry = await ratelimit.hit(f"reset-confirm:{client_ip(request)}", 10, 600)
-    if not allowed:
-        raise HTTPException(status_code=429, detail={"code": "rate_limited", "message": "Too many attempts."}, headers={"Retry-After": str(retry)})
+    await enforce_limit(f"reset-confirm:{client_ip(request)}", 10, 600, "Too many attempts.")
     user = await account_tokens.consume_token(db, body.token, account_tokens.RESET)
     if user is None:
         await db.commit()

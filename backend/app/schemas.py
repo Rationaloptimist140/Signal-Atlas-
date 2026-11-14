@@ -240,6 +240,10 @@ class OrganisationUpdateIn(BaseModel):
     name: str = Field(min_length=1, max_length=200)
 
 
+class BillingSyncIn(BaseModel):
+    session_id: str | None = Field(default=None, max_length=200, pattern=r"^cs_(test|live)_[A-Za-z0-9]+$")
+
+
 class CheckoutIn(BaseModel):
     plan: Literal["pro", "business"]
     interval: Literal["month", "year"] = "month"
@@ -247,6 +251,10 @@ class CheckoutIn(BaseModel):
 
 class TokenIn(BaseModel):
     token: str = Field(min_length=20, max_length=200)
+
+
+class EmailIn(BaseModel):
+    email: EmailStr
 
 
 class PasswordResetRequestIn(BaseModel):

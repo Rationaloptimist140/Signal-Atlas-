@@ -12,7 +12,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import func, select, text
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from app import __version__
+from app import __version__, ratelimit
 from app.config import get_settings
 from app.database import get_sessionmaker
 from app.logging_config import configure_logging, get_logger
@@ -30,6 +30,13 @@ from app.routers import (
 )
 
 log = get_logger("api")
+
+# JSON never needs to load anything; the interactive docs load Swagger UI / ReDoc assets from jsDelivr.
+API_CSP = "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'"
+DOCS_CSP = ("default-src 'none'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; style-src 'unsafe-inline' https://cdn.jsdelivr.net https://fonts.googleapis.com; "
+            "font-src https://fonts.gstatic.com; img-src 'self' data: https://fastapi.tiangolo.com https://cdn.redoc.ly; connect-src 'self'; worker-src blob:; "
+            "frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
+DOCS_PATHS = ("/api/docs", "/api/redoc")
 
 DESCRIPTION = """
 **SIGNAL ATLAS** turns public open-source activity into technology and commercial intelligence.
@@ -58,7 +65,8 @@ async def lifespan(app: FastAPI):
 def create_app() -> FastAPI:
     settings = get_settings()
     app = FastAPI(title="SIGNAL ATLAS API", version=__version__, description=DESCRIPTION, lifespan=lifespan,
-                  docs_url="/api/docs", redoc_url="/api/redoc", openapi_url="/api/openapi.json")
+                  docs_url="/api/docs" if settings.api_docs_enabled else None, redoc_url="/api/redoc" if settings.api_docs_enabled else None,
+                  openapi_url="/api/openapi.json" if settings.api_docs_enabled else None)
     app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origin_list, allow_credentials=True,
                        allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"], allow_headers=["Content-Type", "X-CSRF-Token", "X-API-Key", "Authorization"])
 
@@ -80,6 +88,8 @@ def create_app() -> FastAPI:
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        response.headers["Content-Security-Policy"] = DOCS_CSP if request.url.path.startswith(DOCS_PATHS) else API_CSP
+        response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
         if request.url.path.startswith("/api/v1"):
             response.headers["Cache-Control"] = "no-store"
         if settings.app_env == "production":
@@ -92,6 +102,12 @@ def create_app() -> FastAPI:
         detail = exc.detail if isinstance(exc.detail, dict) else {"code": "error", "message": str(exc.detail)}
         return JSONResponse(status_code=exc.status_code, content={"error": detail}, headers=getattr(exc, "headers", None))
 
+    @app.exception_handler(ratelimit.RateLimitUnavailable)
+    async def limiter_unavailable(_request: Request, _exc: ratelimit.RateLimitUnavailable):
+        # Fail closed: sensitive operations are refused rather than run without a working rate limiter.
+        return JSONResponse(status_code=503, headers={"Retry-After": "10"},
+                            content={"error": {"code": "temporarily_unavailable", "message": "This action is temporarily unavailable. Please try again in a moment."}})
+
     @app.exception_handler(RequestValidationError)
     async def validation_error(_request: Request, exc: RequestValidationError):
         fields = [{"field": ".".join(str(p) for p in err["loc"][1:]) or str(err["loc"][0]), "message": err["msg"].removeprefix("Value error, ")} for err in exc.errors()]
@@ -102,14 +118,18 @@ def create_app() -> FastAPI:
     async def health() -> dict:
         return {"status": "ok", "version": __version__}
 
-    @app.get("/health/ready", tags=["system"], summary="Readiness probe (checks the database)")
+    @app.get("/health/ready", tags=["system"], summary="Readiness probe (database and rate-limit backend)")
     async def ready():
+        database = True
         try:
             async with get_sessionmaker()() as session:
                 await session.execute(text("SELECT 1"))
         except Exception:  # noqa: BLE001
-            return JSONResponse(status_code=503, content={"status": "unavailable", "database": False})
-        return {"status": "ready", "database": True}
+            database = False
+        limiter = await ratelimit.status()
+        healthy = database and limiter["healthy"]
+        body = {"status": "ready" if healthy else "unavailable", "database": database, "rate_limiting": limiter}
+        return body if healthy else JSONResponse(status_code=503, content=body)
 
     for router in (auth.router, repositories.router, developers.router, trends.router, opportunities.router, competitors.router, dashboard.router, account.router, billing.router):
         app.include_router(router, prefix="/api/v1")

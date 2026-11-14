@@ -13,7 +13,7 @@ os.environ["JOBS_INLINE"] = "true"
 os.environ["COOKIE_SECURE"] = "false"
 os.environ["ALLOW_SELF_SERVE_PLAN_CHANGE"] = "true"
 os.environ["LLM_PROVIDER"] = "rules"
-for _var in ("EMAIL_PROVIDER", "RESEND_API_KEY", "STRIPE_SECRET_KEY", "STRIPE_WEBHOOK_SECRET", "BILLING_PROVIDER", "PLAN_OVERRIDES_JSON", "GITHUB_TOKEN", "GITHUB_OAUTH_CLIENT_ID", "GITHUB_OAUTH_CLIENT_SECRET", "REDIS_URL", "ANTHROPIC_API_KEY", "OPENAI_API_KEY"):
+for _var in ("RATE_LIMIT_BACKEND", "TRUSTED_PROXY_HOPS", "LOGIN_REQUIRES_VERIFIED_EMAIL", "EMAIL_PROVIDER", "RESEND_API_KEY", "STRIPE_SECRET_KEY", "STRIPE_WEBHOOK_SECRET", "BILLING_PROVIDER", "PLAN_OVERRIDES_JSON", "GITHUB_TOKEN", "GITHUB_OAUTH_CLIENT_ID", "GITHUB_OAUTH_CLIENT_SECRET", "REDIS_URL", "ANTHROPIC_API_KEY", "OPENAI_API_KEY"):
     os.environ.pop(_var, None)
 
 import httpx  # noqa: E402
@@ -82,14 +82,27 @@ def last_token(kind: str, to: str | None = None) -> str:
 
 
 async def register(client: ApiClient, email: str, name: str = "Test User", org: str | None = None, verify: bool = True) -> dict:
+    """Sign up, optionally follow the verification link, then sign in - exactly as a user would."""
     resp = await client.post("/api/v1/auth/register", json={"email": email, "password": PASSWORD, "full_name": name, "organisation_name": org})
-    assert resp.status_code == 201, resp.text
-    data = resp.json()
-    client.csrf = data["csrf_token"]
-    if verify:  # follow the verification link exactly as a user would
+    assert resp.status_code == 202, resp.text
+    if verify:
         confirmed = await client.post("/api/v1/auth/verify-email/confirm", json={"token": last_token("verify_email", email.lower())})
         assert confirmed.status_code == 200, confirmed.text
+    login = await client.post("/api/v1/auth/login", json={"email": email, "password": PASSWORD})
+    assert login.status_code == 200, login.text
+    data = login.json()
+    client.csrf = data["csrf_token"]
     return data
+
+
+def production_settings(**overrides):
+    """A valid production configuration; override one field to test a single guard."""
+    from app.config import Settings
+
+    base = dict(app_env="production", secret_key="p" * 48, allow_self_serve_plan_change=False, cookie_secure=None, seed_demo_data=False,
+                database_url="postgresql://u:p@db.internal:5432/atlas", frontend_url="https://atlas.example.org", cors_origins="https://atlas.example.org",
+                redis_url="redis://cache.internal:6379/0", jobs_inline=False)
+    return Settings(**(base | overrides))
 
 
 @pytest_asyncio.fixture(loop_scope="session")

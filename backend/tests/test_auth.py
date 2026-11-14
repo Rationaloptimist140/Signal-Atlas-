@@ -20,7 +20,9 @@ async def test_register_creates_workspace_session_and_default_watchlist(anon):
 
 
 async def test_session_cookie_is_httponly_and_password_is_hashed(anon, db):
-    resp = await anon.post("/api/v1/auth/register", json={"email": "c@example.com", "password": PASSWORD, "full_name": "C"})
+    signup = await anon.post("/api/v1/auth/register", json={"email": "c@example.com", "password": PASSWORD, "full_name": "C"})
+    assert signup.status_code == 202 and not signup.headers.get_list("set-cookie")  # signing up never creates a session
+    resp = await anon.post("/api/v1/auth/login", json={"email": "c@example.com", "password": PASSWORD})
     cookies = resp.headers.get_list("set-cookie")
     session_cookie = next(c for c in cookies if c.startswith("sa_session="))
     assert "HttpOnly" in session_cookie and "SameSite=lax" in session_cookie
@@ -39,9 +41,48 @@ async def test_register_validation(anon):
     assert bad_email.status_code == 422
 
 
-async def test_duplicate_email_rejected(client, anon):
-    resp = await anon.post("/api/v1/auth/register", json={"email": "OWNER-A@example.com", "password": PASSWORD, "full_name": "Dup"})
-    assert resp.status_code == 409 and resp.json()["error"]["code"] == "email_taken"
+async def test_registration_does_not_reveal_whether_an_email_is_registered(client, anon, db):
+    """The response for an existing address is identical to a new one; the owner is told by e-mail instead."""
+    from app.services.mailer import ConsoleMailer
+
+    ConsoleMailer.outbox.clear()
+    fresh = await anon.post("/api/v1/auth/register", json={"email": "brand-new@example.com", "password": PASSWORD, "full_name": "New"})
+    taken = await anon.post("/api/v1/auth/register", json={"email": "OWNER-A@example.com", "password": "An0therPassw0rd", "full_name": "Impostor"})
+    assert fresh.status_code == taken.status_code == 202 and fresh.json() == taken.json()
+    assert not fresh.headers.get_list("set-cookie") and not taken.headers.get_list("set-cookie")
+    assert set(fresh.headers) == set(taken.headers)
+    kinds = {m.to: m.kind for m in ConsoleMailer.outbox}
+    assert kinds == {"brand-new@example.com": "verify_email", "owner-a@example.com": "account_exists"}
+    notice = next(m for m in ConsoleMailer.outbox if m.kind == "account_exists")
+    assert "token=" not in notice.text and notice.action_url.endswith("/login")
+    # the existing account is untouched: old password works, the impostor's does not, no second account exists
+    assert (await anon.post("/api/v1/auth/login", json={"email": "owner-a@example.com", "password": "An0therPassw0rd"})).status_code == 401
+    assert (await anon.post("/api/v1/auth/login", json={"email": "owner-a@example.com", "password": PASSWORD})).status_code == 200
+    assert len((await db.scalars(select(User).where(User.email == "owner-a@example.com"))).all()) == 1
+    assert "user.register_existing_email" in set((await db.scalars(select(AuditLog.action))).all())
+    # repeated attempts cannot be used to flood the owner's inbox
+    for _ in range(4):
+        await anon.post("/api/v1/auth/register", json={"email": "owner-a@example.com", "password": PASSWORD, "full_name": "X"})
+    assert len([m for m in ConsoleMailer.outbox if m.kind == "account_exists"]) == 3
+
+
+async def test_hard_gate_makes_sign_up_probing_impossible(anon, settings, monkeypatch):
+    """With LOGIN_REQUIRES_VERIFIED_EMAIL, register-then-login gives the same answer for new and existing addresses."""
+    from tests.conftest import last_token
+
+    monkeypatch.setattr(settings, "login_requires_verified_email", True)
+    await anon.post("/api/v1/auth/register", json={"email": "probe@example.com", "password": PASSWORD, "full_name": "Probe"})
+    unverified = await anon.post("/api/v1/auth/login", json={"email": "probe@example.com", "password": PASSWORD})
+    wrong = await anon.post("/api/v1/auth/login", json={"email": "probe@example.com", "password": "Wrong-password1"})
+    unknown = await anon.post("/api/v1/auth/login", json={"email": "nobody@example.com", "password": PASSWORD})
+    assert unverified.status_code == wrong.status_code == unknown.status_code == 401
+    assert unverified.json() == wrong.json() == unknown.json()
+    assert "not been confirmed" in unverified.json()["error"]["message"]
+    resend = await anon.post("/api/v1/auth/verify-email/resend", json={"email": "probe@example.com"})
+    ghost = await anon.post("/api/v1/auth/verify-email/resend", json={"email": "nobody@example.com"})
+    assert resend.status_code == ghost.status_code == 202 and resend.json() == ghost.json()
+    assert (await anon.post("/api/v1/auth/verify-email/confirm", json={"token": last_token("verify_email", "probe@example.com")})).status_code == 200
+    assert (await anon.post("/api/v1/auth/login", json={"email": "probe@example.com", "password": PASSWORD})).status_code == 200
 
 
 async def test_login_logout_cycle(client):

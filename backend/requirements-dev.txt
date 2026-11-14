@@ -5,3 +5,4 @@ respx>=0.21
 aiosqlite>=0.20
 ruff>=0.5
 pip-audit>=2.7
+fakeredis>=2.26

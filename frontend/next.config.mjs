@@ -4,6 +4,7 @@ const backend = (process.env.BACKEND_URL || "http://localhost:8000").replace(/\/
 const nextConfig = {
   reactStrictMode: true,
   poweredByHeader: false,
+  // The Content-Security-Policy is set per request in src/middleware.ts (it needs a nonce).
   // The browser only ever talks to this origin; /api is proxied to the FastAPI service so the
   // session cookie stays first-party (HttpOnly, SameSite=Lax) and no backend URL or token is exposed.
   async rewrites() {
@@ -18,6 +19,8 @@ const nextConfig = {
           { key: "X-Content-Type-Options", value: "nosniff" },
           { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
           { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=()" },
+          // Ignored by browsers over plain http (local development); enforced once served over https.
+          { key: "Strict-Transport-Security", value: "max-age=31536000; includeSubDomains" },
         ],
       },
     ];

@@ -31,6 +31,7 @@ afterEach(() => {
   navigationState.pathname = "/overview";
   navigationState.search = new URLSearchParams();
   window.localStorage.clear();
+  window.sessionStorage.clear();
 });
 
 type Route = { status?: number; body?: unknown } | ((url: string, init?: RequestInit) => { status?: number; body?: unknown });

@@ -7,11 +7,17 @@ services:
     volumes: [pgdata:/var/lib/postgresql/data]
     healthcheck: { test: ["CMD-SHELL", "pg_isready -U signal -d signal_atlas"], interval: 5s, timeout: 3s, retries: 10 }
 
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck: { test: ["CMD", "redis-cli", "ping"], interval: 5s, timeout: 3s, retries: 10 }
+
   api:
     build: ./backend
     environment: &backend_env
       APP_ENV: development
       DATABASE_URL: postgresql://signal:signal@postgres:5432/signal_atlas
+      REDIS_URL: redis://redis:6379/0
       FRONTEND_URL: http://localhost:3000
       CORS_ORIGINS: http://localhost:3000
       COOKIE_SECURE: "false"
@@ -21,7 +27,7 @@ services:
       LLM_PROVIDER: ${LLM_PROVIDER:-rules}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-    depends_on: { postgres: { condition: service_healthy } }
+    depends_on: { postgres: { condition: service_healthy }, redis: { condition: service_healthy } }
     ports: ["8000:8000"]
 
   worker:

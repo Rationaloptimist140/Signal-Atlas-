@@ -128,7 +128,7 @@ describe("account email flows", () => {
     navigationState.search = new URLSearchParams("token=reset-token-abcdefghijklmnopqrstuvwxyz");
     const calls = mockApi({ "/auth/password-reset/confirm": { body: { status: "password_reset" } } });
     render(<ResetPasswordForm />);
-    await userEvent.type(screen.getByLabelText("New password"), "weak");
+    await userEvent.type(await screen.findByLabelText("New password"), "weak");
     await userEvent.click(screen.getByRole("button", { name: "Update password" }));
     expect(screen.getByText("Use at least 10 characters.")).toBeInTheDocument();
     await userEvent.clear(screen.getByLabelText("New password"));
@@ -144,9 +144,9 @@ describe("account email flows", () => {
     expect(calls[0].body).toEqual({ token: "reset-token-abcdefghijklmnopqrstuvwxyz", new_password: "Br4ndNewPassw0rd" });
   });
 
-  it("refuses to show the reset form without a token", () => {
+  it("refuses to show the reset form without a token", async () => {
     render(<ResetPasswordForm />);
-    expect(screen.getByText("This reset link is incomplete.")).toBeInTheDocument();
+    expect(await screen.findByText("This reset link is incomplete.")).toBeInTheDocument();
     expect(screen.queryByLabelText("New password")).toBeNull();
   });
 
@@ -160,6 +160,25 @@ describe("account email flows", () => {
     mockApi({ "/auth/verify-email/confirm": { status: 400, body: { error: { code: "invalid_token", message: "This verification link is invalid, has expired or was already used." } } } });
     render(<VerifyEmailPanel />);
     expect(await screen.findByText("This link could not be used.")).toBeInTheDocument();
+  });
+
+  it("reads the token from the URL fragment (never sent to a server) and clears it from the address bar", async () => {
+    const replaceState = vi.spyOn(window.history, "replaceState");
+    window.location.hash = "#token=fragment-token-abcdefghijklmnopqrstuvwxyz";
+    const calls = mockApi({ "/auth/verify-email/confirm": { body: { status: "verified" } } });
+    render(<VerifyEmailPanel />);
+    expect(await screen.findByText("Email address confirmed.")).toBeInTheDocument();
+    expect(calls[0].body).toEqual({ token: "fragment-token-abcdefghijklmnopqrstuvwxyz" });
+    expect(replaceState).toHaveBeenCalledWith(null, "", window.location.pathname);
+    window.location.hash = "";
+  });
+
+  it("confirms the checkout session with the API when returning from hosted checkout", async () => {
+    const calls = mockApi({ "/auth/me": { body: ME }, "/billing/plans": { body: catalogue() }, "/billing/subscription": { body: subscription() }, "/billing/payments": { body: { items: [] } },
+      "/billing/sync": { body: { outcome: "processed", status: "active", plan: "pro" } } });
+    render(<Providers><BillingTab checkoutParam="success" checkoutSessionId="cs_test_abc123" /></Providers>);
+    expect(await screen.findByText(/Checkout complete/)).toBeInTheDocument();
+    await waitFor(() => expect(calls.find((c) => c.method === "POST" && c.url.endsWith("/billing/sync"))?.body).toEqual({ session_id: "cs_test_abc123" }));
   });
 
   it("shows the verification banner only to unverified users and resends the email", async () => {

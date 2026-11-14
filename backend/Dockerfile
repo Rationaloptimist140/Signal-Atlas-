@@ -14,5 +14,7 @@ RUN useradd --create-home --uid 10001 atlas && chown -R atlas /app
 USER atlas
 
 EXPOSE 8000
-# Migrations run on every release; they are idempotent.
-CMD ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000} --proxy-headers --forwarded-allow-ips='*'"]
+HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3 CMD python -c "import os,urllib.request; urllib.request.urlopen('http://127.0.0.1:%s/health' % os.environ.get('PORT','8000'), timeout=4)" || exit 1
+# Migrations run before the server starts; they are idempotent, and a failed migration stops the release.
+# --host "" listens on IPv4 and IPv6: Railway's private network can be IPv6-only.
+CMD ["sh", "-c", "alembic upgrade head && exec uvicorn app.main:app --host '' --port ${PORT:-8000}"]

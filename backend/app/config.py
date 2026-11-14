@@ -26,6 +26,10 @@ class Settings(BaseSettings):
     cors_origins: str = "http://localhost:3000"
     frontend_url: str = "http://localhost:3000"
     allow_registration: bool = True
+    login_requires_verified_email: bool = False  # hard gate (closes sign-up enumeration fully); default is the soft gate
+    api_docs_enabled: bool = True
+    trusted_proxy_hops: int = 1  # proxies between the internet and this API that append to X-Forwarded-For (Railway edge + Next.js proxy = 2)
+    rate_limit_backend: Literal["auto", "memory", "redis"] = "auto"  # auto = redis when REDIS_URL is set
     platform_admin_emails: str = ""  # comma-separated; may run instance-wide tools in production
 
     # --- data stores ---
@@ -92,14 +96,34 @@ class Settings(BaseSettings):
     def _production_guards(self) -> "Settings":
         if self.cookie_secure is None:
             self.cookie_secure = self.app_env == "production"
+        if self.rate_limit_backend == "redis" and not self.redis_url:
+            raise ValueError("RATE_LIMIT_BACKEND=redis requires REDIS_URL")
         if self.app_env == "production":
+            problems = []
             if self.secret_key == DEV_SECRET or len(self.secret_key) < 32:
-                raise ValueError("SECRET_KEY must be set to a random value of at least 32 characters in production")
+                problems.append("SECRET_KEY must be set to a random value of at least 32 characters")
             if self.allow_self_serve_plan_change:
-                raise ValueError("ALLOW_SELF_SERVE_PLAN_CHANGE must be false in production")
+                problems.append("ALLOW_SELF_SERVE_PLAN_CHANGE must be false")
+            if self.is_sqlite:
+                problems.append("DATABASE_URL must point at PostgreSQL (a local SQLite file is for development only)")
+            if not self.cookie_secure:
+                problems.append("COOKIE_SECURE must not be disabled")
+            urls = [self.frontend_url, *self.cors_origin_list]
+            if any(not u.startswith("https://") or "localhost" in u or "127.0.0.1" in u for u in urls):
+                problems.append("FRONTEND_URL and CORS_ORIGINS must be public https:// URLs (not localhost)")
+            if self.rate_limit_backend == "auto" and not self.redis_url:
+                problems.append("set REDIS_URL for shared rate limiting, or RATE_LIMIT_BACKEND=memory to accept per-process limits (single API instance only)")
+            if self.seed_demo_data:
+                problems.append("SEED_DEMO_DATA must be false")
+            if problems:
+                raise ValueError("Unsafe production configuration: " + "; ".join(problems))
         if self.stripe_secret_key and not self.stripe_secret_key.startswith(("sk_test_", "rk_test_")) and not self.allow_live_payments:
             raise ValueError("STRIPE_SECRET_KEY must be a test-mode key (sk_test_...). Live payments are not activated in this release.")
         return self
+
+    @property
+    def rate_limit_uses_redis(self) -> bool:
+        return self.rate_limit_backend == "redis" or (self.rate_limit_backend == "auto" and bool(self.redis_url))
 
     @property
     def cors_origin_list(self) -> list[str]:

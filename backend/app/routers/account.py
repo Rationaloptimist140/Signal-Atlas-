@@ -4,12 +4,14 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app import ratelimit
 from app.config import get_settings
 from app.database import get_db
 from app.deps import (
     Principal,
     client_ip,
     get_session_principal,
+    limit_action,
     require_admin,
     require_platform_admin,
     require_verified_admin,
@@ -59,6 +61,7 @@ async def list_api_keys(principal: Principal = Depends(get_session_principal), d
 
 @router.post("/api-keys", status_code=201, summary="Create an API key (shown once)")
 async def create_api_key(body: ApiKeyIn, request: Request, principal: Principal = Depends(require_verified_admin), db: AsyncSession = Depends(get_db)) -> dict:
+    await limit_action(principal, "api-key-create", 20, 3600)
     plan = await org_plan(db, principal.organisation_id)
     if plan.api_keys == 0:
         raise upgrade_required(plan, "api_access", "API access starts on the Pro plan.")
@@ -167,13 +170,16 @@ async def audit_log(principal: Principal = Depends(require_admin), db: AsyncSess
 
 
 @router.get("/system/status", summary="Data and job status for this instance")
-async def system_status(principal: Principal = Depends(require_platform_admin), db: AsyncSession = Depends(get_db)) -> dict:
+async def system_status(request: Request, principal: Principal = Depends(require_platform_admin), db: AsyncSession = Depends(get_db)) -> dict:
     job_counts = dict((await db.execute(select(Job.status, func.count()).group_by(Job.status))).all())
     live = int(await db.scalar(select(func.count()).select_from(Repository).where(Repository.data_source == DataSource.LIVE.value)) or 0)
     demo_count = int(await db.scalar(select(func.count()).select_from(Repository).where(Repository.data_source == DataSource.DEMO.value)) or 0)
     recent = (await db.scalars(select(Job).order_by(Job.id.desc()).limit(15))).all()
     return {"jobs": {s: job_counts.get(s, 0) for s in ("queued", "running", "succeeded", "failed")}, "live_repositories": live, "demo_repositories": demo_count,
             "jobs_inline": get_settings().jobs_inline,
+            "rate_limiting": await ratelimit.status(),
+            # Lets an operator confirm TRUSTED_PROXY_HOPS after deployment: this must be your own public address.
+            "client_ip_as_seen": client_ip(request), "forwarded_for_entries": len([p for p in request.headers.get("x-forwarded-for", "").split(",") if p.strip()]),
             "recent_jobs": [{"id": j.id, "job_type": j.job_type, "status": j.status, "attempts": j.attempts, "run_after": j.run_after, "finished_at": j.finished_at, "last_error": j.last_error} for j in recent]}
 
 
