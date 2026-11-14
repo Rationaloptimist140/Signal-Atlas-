@@ -3,7 +3,7 @@
 **Open-source technology intelligence and commercial opportunity discovery.**
 Signal Atlas turns public GitHub activity into evidence-backed intelligence: what is gaining momentum, who is building it, and which projects have the structural signals of a commercial opportunity.
 
-> Status: **v0.3.0, prepared for deployment but not deployed.** Email delivery and card payments are implemented and tested with mocked providers and a local stub; they have not been run against Resend or Stripe and need external accounts to switch on. See [PROGRESS.md](PROGRESS.md) for what is implemented, tested, configured and deployed.
+> Status: **v0.3.1, deployed on Railway at <https://web-production-e6e86402.up.railway.app>, not yet launched.** Email delivery and card payments are implemented and tested with mocked providers and a local stub; they have not been run against Resend or Stripe and are not configured on the deployment, so accounts cannot be verified or upgraded yet. See [PROGRESS.md](PROGRESS.md) for what is implemented, tested, configured and deployed.
 
 ## What makes it different
 

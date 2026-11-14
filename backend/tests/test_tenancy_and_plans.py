@@ -4,7 +4,7 @@ from sqlalchemy import select
 
 from app.models import ApiKey, Membership, Notification, Opportunity, Repository, User
 from app.security import hash_password
-from tests.conftest import PASSWORD, make_client
+from tests.conftest import PASSWORD, last_token, make_client, register
 
 
 async def _repo_id(db, name="demo-labs/lumen-agents") -> int:
@@ -207,6 +207,21 @@ async def test_platform_tools_restricted_in_production(client, settings, monkeyp
     assert (await client.post("/api/v1/system/demo/load")).json()["error"]["code"] == "platform_admin_required"
     monkeypatch.setattr(settings, "platform_admin_emails", "owner-a@example.com")
     assert (await client.get("/api/v1/system/status")).status_code == 200
+
+
+async def test_platform_tools_need_a_verified_address_in_production(settings, monkeypatch):
+    """Registering a listed address must not be enough: sign-up alone does not prove who owns it."""
+    monkeypatch.setattr(settings, "platform_admin_emails", "listed-admin@example.com")
+    monkeypatch.setattr(settings, "email_verification_required", True)
+    async with make_client() as squatter:
+        await register(squatter, "listed-admin@example.com", "Not The Owner", "Squat Org", verify=False)
+        monkeypatch.setattr(settings, "app_env", "production")
+        refused = await squatter.get("/api/v1/system/status")
+        assert refused.status_code == 403 and refused.json()["error"]["code"] == "platform_admin_required"
+        assert (await squatter.post("/api/v1/system/demo/load")).status_code == 403
+        confirmed = await squatter.post("/api/v1/auth/verify-email/confirm", json={"token": last_token("verify_email", "listed-admin@example.com")})
+        assert confirmed.status_code == 200
+        assert (await squatter.get("/api/v1/system/status")).status_code == 200
 
 
 async def test_settings_report_integration_setup_requirements(client):

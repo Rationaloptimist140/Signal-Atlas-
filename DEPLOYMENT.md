@@ -47,8 +47,8 @@ The browser only ever talks to `web`; `web` proxies `/api/*` to `api` over Railw
 | `CORS_ORIGINS` | same as `FRONTEND_URL` | |
 | `PORT` | `8000` | Fixed port so `web` can reach `api` privately |
 | `REDIS_URL` | `${{Redis.REDIS_URL}}` | Or `RATE_LIMIT_BACKEND=memory` instead |
-| `TRUSTED_PROXY_HOPS` | `1` | See "After the first deploy" |
-| `PLATFORM_ADMIN_EMAILS` | your login e-mail | Who may run discovery and demo tools |
+| `TRUSTED_PROXY_HOPS` | `2` | Railway edge + the `web` proxy (measured on the live deployment). See "After the first deploy" |
+| `PLATFORM_ADMIN_EMAILS` | your login e-mail | Who may run discovery and demo tools. Only takes effect once that address is verified, so it needs working e-mail |
 | `JOBS_INLINE` | `true` only if there is no `worker` | |
 | E-mail | `EMAIL_PROVIDER=resend`, `RESEND_API_KEY`, `EMAIL_FROM` | Section 4 |
 | Payments | `BILLING_PROVIDER=stripe`, `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` | Section 5 (test mode) |
@@ -120,9 +120,12 @@ The plan is activated by Stripe's confirmation (webhook, or a direct check with 
 ## 7. After the first deploy
 
 1. Open `https://<web domain>/` — the landing page should load; `…/api/docs` shows the API reference.
-2. In the `api` service shell run `python -m app.cli doctor`. Every line should be `PASS`, or a `WARN` you have chosen to accept.
-3. Create your account, sign in, and open **Settings → Data & jobs**. Under "Rate limiting and proxy check", *Your address as seen by the API* must be your own public IP address. If it shows a private or shared address, change `TRUSTED_PROXY_HOPS` (0 = use the connection address, 1 = one trusted proxy, 2 = two) and redeploy. Per-IP rate limits depend on this being right.
-4. Load data: **Settings → Data & jobs → Run discovery** (needs `worker`), or **Repository Intelligence → Search GitHub**.
+2. Run `python -m app.cli doctor` on the `api` service (Railway CLI: `railway run -s api python -m app.cli doctor`, or set it temporarily as the pre-deploy command and read the deploy log). Every line should be `PASS`, or a `WARN` you have chosen to accept.
+3. Create your account, sign in, and open **Settings → Data & jobs**. Under "Rate limiting and proxy check", *Your address as seen by the API* must be your own public IP address. If it shows a private or shared address, change `TRUSTED_PROXY_HOPS` (0 = use the connection address, 1 = one trusted proxy, 2 = two) and redeploy. On Railway with `web` proxying to `api` the correct value is `2`: with `1` every visitor appeared as the same Railway address and shared one rate-limit allowance. Per-IP rate limits depend on this being right.
+4. Load data: **Settings → Data & jobs → Run discovery**, or **Repository Intelligence → Search GitHub**.
+5. Run the deployed-site journey from your own machine: `cd e2e && BASE_URL=https://<web domain> node production.mjs`.
+
+**Without a `worker` service** (`JOBS_INLINE=true`) jobs run only as part of a request. Discovery queues its searches a few seconds apart, so press **Recompute** a minute or two later to finish them, and nothing runs on a timer: no daily re-sync, and lapsed subscriptions are not expired automatically. Add the `worker` before taking payments.
 
 ## 8. Backups and rollback
 
@@ -131,6 +134,8 @@ Railway's own backups depend on your plan. A free manual export from your own ma
 ```
 pg_dump "<external DATABASE_URL>" -Fc -f signal_atlas.dump
 ```
+
+The external URL is `DATABASE_PUBLIC_URL` on the Postgres service (Railway → Postgres → Variables). With the Railway CLI, `railway connect Postgres` opens a `psql` session the same way. Restore into an empty database with `pg_restore --no-owner -d "<target URL>" signal_atlas.dump`, and try that once before you need it. No export has been taken yet.
 
 Take one before any deploy that includes a new migration. To roll back code, redeploy a previous deployment in Railway. Migrations `0001`–`0002` are additive; `alembic downgrade -1` reverses the latest one if older code must run.
 
