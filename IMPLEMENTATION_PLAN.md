@@ -42,7 +42,8 @@ Phases follow the build specification. Status key: ✅ done · 🟡 partly done 
 ## Cross-cutting ✅
 - ✅ Background worker with retries, rate-limit deferral and recurring schedule
 - ✅ Security controls (see SECURITY.md) and audit logging
-- ✅ Automated tests: backend 126, frontend 38; CI workflow file (needs the Workflows permission to be pushed)
+- ✅ Automated tests: backend 159, frontend 42, browser acceptance journey; CI workflow file ready (`ci/`), not yet installed on GitHub
+- ✅ Production hardening: generic sign-up, Redis rate limiting, Content-Security-Policy, start-up safety checks, configuration checker
 - ✅ Documentation set and Railway deployment configuration
 
 ## Next phases (proposed)

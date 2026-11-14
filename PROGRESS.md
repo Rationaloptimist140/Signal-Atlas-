@@ -1,76 +1,106 @@
 # Progress
 
-_Last updated: 10 November 2026 — session 2 (MVP completion, v0.2.0)._
+_Last updated: 14 November 2026 — session 3 (integration and deployment readiness, v0.3.0)._
 
-## Status at a glance
+## Where things stand
 
-| Area | Implemented | Automated tests | Verified against the real service | Deployed |
+The application is complete and prepared for deployment. **It is not deployed, CI is not active on GitHub, and neither Resend nor Stripe has been exercised for real.** Those three items need access only the owner can give (see [TASKS.md](TASKS.md)).
+
+How each area was verified:
+
+| Label | Meaning |
+|---|---|
+| **Local** | Run on a developer machine against real components (PostgreSQL 16, Redis 7, a real browser, the public GitHub API) |
+| **Mock** | Provider replaced by a mocked HTTP response or the local Stripe stub |
+| **Sandbox** | Run against the provider's own test environment |
+| **Production** | Run on the deployed system |
+| **Blocked** | Cannot be done without a credential, permission or approval |
+
+| Area | Local | Mock | Sandbox | Production |
 |---|:-:|:-:|:-:|:-:|
-| Repository, developer, trend, opportunity, competitor intelligence and scoring | ✅ | ✅ | ✅ live GitHub API (anonymous) | ❌ |
-| Registration, login, sessions, roles, API keys | ✅ | ✅ | ✅ end to end in a browser | ❌ |
-| Email verification and password reset | ✅ | ✅ | 🟡 flows verified end to end with development links; **no email has been sent through Resend** (no credentials) | ❌ |
-| Subscription lifecycle, entitlements, usage limits | ✅ | ✅ | n/a | ❌ |
-| Stripe hosted checkout and webhooks (test mode) | ✅ | ✅ mocked provider | ❌ **not yet run against Stripe** (no credentials) | ❌ |
-| GitHub OAuth sign-in | ✅ | ✅ mocked provider | ❌ needs an OAuth app | ❌ |
-| AI report enrichment | ✅ | ✅ fake provider | ❌ needs an LLM key | ❌ |
-| CI workflow | ✅ file in repository | — | see "CI" below | — |
+| Intelligence features (repositories, developers, trends, opportunities, competitors, scoring) | ✅ | — | — | ❌ not deployed |
+| Accounts, sessions, soft verification gate, password reset | ✅ | — | — | ❌ |
+| Sign-up without account enumeration | ✅ | — | — | ❌ |
+| Rate limiting on Redis, failing closed | ✅ real Redis 7 | ✅ | — | ❌ |
+| Content-Security-Policy | ✅ real browser, zero violations | — | — | ❌ |
+| E-mail content, links, expiry, single use, limits | ✅ | ✅ Resend API mocked | **Blocked** — no Resend key or verified domain | ❌ |
+| **Real e-mail delivery** | — | — | **Blocked — never tested** | ❌ |
+| Stripe checkout, webhooks, renewal, failure, cancellation, refunds, history, entitlements | ✅ browser journey against the local stub | ✅ | **Blocked** — no Stripe test key | ❌ |
+| **Real Stripe test-mode checkout** | — | — | **Blocked — never tested** | ❌ |
+| GitHub sign-in (OAuth) | — | ✅ | **Blocked** — no OAuth app | ❌ |
+| AI report enrichment | — | ✅ | **Blocked** — no LLM key | ❌ |
+| CI on GitHub | ✅ every step run by hand | — | **Blocked** — Workflows permission | — |
+| Railway deployment | ✅ start commands, migrations, health checks and IPv4+IPv6 listening run by hand. **Docker images not built** (no Docker in the build environment) | — | **Blocked** — awaiting approval | ❌ |
 
-Nothing is deployed and no paid resource has been created. The product is **not production-ready** until the external configuration in [TASKS.md](TASKS.md) is done.
-
-## Verification performed in session 2
+## Verification performed in session 3
 
 | Check | Result |
 |---|---|
-| Backend tests on SQLite | 126 passed |
-| Backend tests on PostgreSQL 16 | 126 passed |
-| `ruff check app tests alembic` | clean |
-| Migrations `0001` → `0002` on PostgreSQL 16 (upgrade, downgrade, upgrade) and `alembic check` | applied; no drift |
-| Migrations on SQLite (upgrade to head, downgrade to base) | passed |
-| `pip-audit` / `npm audit --omit=dev` | no known vulnerabilities / 0 vulnerabilities |
-| Frontend ESLint, `tsc --noEmit` | clean |
-| Frontend tests | 38 passed |
-| Frontend production build | succeeded (25 routes) |
-| Browser run (headless Chromium, desktop and 390 px) | 18 of 18 checks passed, no console errors: landing → pricing → sign-up → soft gate blocks a report → verify by link → report generated → sign out → forgot password → reset → old password rejected → new password accepted |
+| Backend tests, SQLite | 158 passed, 1 skipped (needs Redis) |
+| Backend tests, PostgreSQL 16 + Redis 7 | 159 passed |
+| Ruff · `alembic check` · `pip-audit` | clean · no drift · no known vulnerabilities |
+| Frontend ESLint · TypeScript · tests · production build | clean · clean · 42 passed · built |
+| `npm audit --omit=dev` | 0 vulnerabilities |
+| Acceptance journey in a real browser (production build, PostgreSQL, Redis, Stripe stub) | 32 of 32 checks passed; no CSP violations or console errors |
+| Token leakage | No e-mail token appeared in any API or web server request log |
 
-## Definition of done
+## Acceptance journey (session 3)
 
-| Criterion | Status |
-|---|---|
-| Application, frontend build and backend start; migrations run | ✅ |
-| Register and log in | ✅ |
-| Email verification and password recovery "when configured" | 🟡 implemented and tested; delivery needs a Resend key and a verified sending domain |
-| Repository discovery, developer intelligence, emerging signals | ✅ |
-| Opportunity reports, explainable scoring, competitor monitoring | ✅ (AI enrichment needs an LLM key; rule-based reports work without) |
-| Pricing and subscription management | ✅ |
-| Card checkout in test mode "when credentials are configured" | 🟡 implemented and tested with mocked Stripe responses; not yet run against Stripe |
-| Entitlements protect premium features; usage limits enforced | ✅ server-side |
-| Security tests and full regression pass | ✅ |
-| CI active or blocker documented | 🟡 see below |
-| Documentation and environment examples accurate | ✅ |
-| Delivered to GitHub | ✅ see the pull request |
+| # | Step | Result | How |
+|---|---|---|---|
+| 1 | Open Signal Atlas | Pass | Local |
+| 2 | Register a new user | Pass | Local |
+| 3 | Send and receive the verification e-mail | Link issued and followed from the development log. **Delivery to an inbox: blocked** | Local / Blocked |
+| 4 | Verify the account | Pass (link is single-use) | Local |
+| 5 | Sign in | Pass | Local |
+| 6 | Browse repository intelligence | Pass | Local |
+| 7 | Discover an emerging technology | Pass | Local |
+| 8 | Generate an opportunity report | Pass | Local |
+| 9 | Premium action as a Free user | Refused with an upgrade prompt | Local |
+| 10 | Checkout | Cancelled and completed checkouts pass **against the local stub**. Stripe test mode: **blocked** | Mock / Blocked |
+| 11 | Subscription activation | Pass, including with webhooks switched off | Mock |
+| 12 | Premium entitlement | API key creation unlocked; key authenticates | Mock |
+| 13 | Cancel the subscription | Pass | Mock |
+| 14 | Subscription state | Failed renewal → grace → recovery → cancelled-at-period-end all correct | Mock |
+| 15 | Password recovery | Pass; other devices signed out; old password rejected | Local |
+| 16 | Sign out and session revocation | Old cookie rejected by the API | Local |
 
-## CI
+## Security findings
 
-`.github/workflows/ci.yml` is complete. The GitHub App used to push this code is not allowed to write files under `.github/workflows/` (GitHub returns 403: the installation lacks the **Workflows** permission). Until that permission is granted, or the file is added through GitHub's web editor, no checks run on GitHub. All checks in the workflow were run locally and pass.
+| Finding | Severity | Status |
+|---|---|---|
+| Registration revealed whether an e-mail was registered | Low | **Fixed.** Identical `202` response and no session either way; existing owners are told by e-mail. Residual under the soft gate documented in SECURITY.md, with `LOGIN_REQUIRES_VERIFIED_EMAIL` to close it fully |
+| Rate limiting was per process | Low | **Fixed.** Redis-backed, required in production unless explicitly waived; sensitive actions fail closed when Redis is down |
+| No Content-Security-Policy | Low | **Fixed.** Nonce-based policy on pages, `default-src 'none'` on the API |
+| Per-IP limits trusted the first `X-Forwarded-For` entry, which a client can forge | Medium (found this session) | **Fixed.** Only the trusted end of the chain is used (`TRUSTED_PROXY_HOPS`) |
+| E-mail tokens travelled in the query string and could reach platform access logs | Low (found this session) | **Fixed.** Tokens are in the URL fragment |
+| Production would start on weak settings other than the secret key | Low (found this session) | **Fixed.** Start-up refuses SQLite, non-https URLs, insecure cookies, demo seeding, an undecided rate-limit backend |
+| Refunds could not be matched on newer Stripe API versions | Low (found this session) | **Fixed** (payment-intent link plus a fallback); mock-tested only |
 
-## What changed in session 2
+No critical or high-severity issue is open.
 
-* **Accounts** — email verification (24-hour single-use hashed tokens), password reset (30-minute tokens, generic responses, all sessions revoked), "sign out everywhere", soft gate enforced in the API.
-* **Mailer** — provider-independent, with a Resend adapter and HTML + plain-text templates. Development prints links to the API log; production never logs tokens.
-* **Billing** — four plans with monthly and annual prices in one catalogue (`PLAN_OVERRIDES_JSON` to change them); subscription states `pending`, `active`, `past_due`, `cancelled`, `expired`; 7-day grace period; cancellation at period end; payment history; Stripe hosted checkout, signed and idempotent webhooks, refunds; live keys and live-mode events refused.
-* **Frontend** — public landing and pricing pages, forgot / reset / verify pages, verification banner, rebuilt billing dashboard (plan, status, usage, checkout, cancel, payment history), ESLint.
-* **Other** — five-minute cache for repeated live GitHub searches; legacy `professional` plan folded into `business` by migration; existing accounts treated as verified by migration.
+## Deployment preparation
 
-## Sending domain note (mail.flanuer.com)
+* Deprecated `railway.json` files removed (Railway no longer reads them for new services); exact dashboard settings are in [DEPLOYMENT.md](DEPLOYMENT.md).
+* The API container now listens on IPv4 and IPv6 (Railway's private network can be IPv6-only) and has a container health check.
+* `/health/ready` covers the database and Redis.
+* `python -m app.cli doctor` checks configuration, database migrations, Redis, the Resend domain, the Stripe key and webhook endpoint, and can send a test e-mail.
 
-Public DNS on 10 November 2026: `flanuer.com` is registered with nameservers at Porkbun. Neither `flanuer.com` nor `mail.flanuer.com` has MX or TXT records (no SPF, DKIM or DMARC), and `mail.flanuer.com` has A records pointing at a web host. It is therefore **not currently set up to send email**. It can be used with Resend if whoever controls the domain adds the DNS records Resend generates; nothing was changed and ownership was not assumed. The sender is configurable through `EMAIL_FROM`.
+## Sending domain (mail.flanuer.com)
+
+Checked 14 November 2026: `flanuer.com` uses Porkbun nameservers; neither it nor `mail.flanuer.com` has MX, SPF, DKIM or DMARC records. It is not set up for sending. Nothing was changed. The records to add are described in DEPLOYMENT.md §4.
 
 ## Known limitations
 
-* Anonymous GitHub access allows about five full repository syncs an hour; set `GITHUB_TOKEN` for practical use.
-* Stripe plan switches for existing subscribers go through the Stripe customer portal, not an in-app upgrade flow.
-* Registration reveals whether an email address is already registered.
-* Rate limiting is per process unless Redis is configured.
+* The two Dockerfiles have never been built: the first Railway build will be their first. The commands inside them were each run by hand.
+* Anonymous GitHub access allows about five full repository syncs an hour.
+* Changing plan while subscribed goes through Stripe's customer portal.
 * No teammate invitations or multi-factor authentication.
-* Technology classification is keyword-based and labelled as inferred; scores are unvalidated heuristics.
+* Classification is keyword-based and labelled as inferred; scores are unvalidated heuristics.
 * The repository has no licence file: all rights are reserved by default.
+
+## Change log
+
+* **Session 3 (v0.3.0)** — security hardening, Redis rate limiting, CSP, billing synchronisation, configuration checker, acceptance suite, deployment checklist.
+* **Session 2 (v0.2.0)** — e-mail verification, password reset, subscriptions, Stripe test-mode billing, landing and pricing pages.
+* **Session 1 (v0.1.0)** — intelligence platform, accounts, API, frontend.

@@ -1,30 +1,36 @@
 # Tasks
 
-## External configuration still required (your accounts; none of this was done)
+## Needed from the owner (nothing here has been done)
 
-- [ ] **GitHub Workflows permission** — grant the GitHub App used for automated pushes the *Workflows* permission, or paste `.github/workflows/ci.yml` (full text in the pull request description) through GitHub's web editor. Without it CI does not run.
-- [ ] **Resend** — create an account (free tier), verify a sending domain by adding its DNS records, then set `EMAIL_PROVIDER=resend`, `RESEND_API_KEY`, `EMAIL_FROM`. `mail.flanuer.com` has no mail DNS records today (see PROGRESS.md).
-- [ ] **Stripe test mode** — set `BILLING_PROVIDER=stripe`, `STRIPE_SECRET_KEY` (`sk_test_...`), `STRIPE_WEBHOOK_SECRET`; add the webhook endpoint and enable the customer portal (steps in DEPLOYMENT.md); then run one test checkout end to end.
-- [ ] **GitHub token** — read-only public-repository token as `GITHUB_TOKEN`.
-- [ ] **GitHub OAuth app** — `GITHUB_OAUTH_CLIENT_ID` / `GITHUB_OAUTH_CLIENT_SECRET`.
-- [ ] **LLM provider** — optional; `LLM_PROVIDER` plus a key.
-- [ ] **Railway deployment** — awaiting separate confirmation; creates billable services.
-- [ ] **Legal** — privacy notice, terms, Legitimate Interests Assessment for developer profiles; decide on a licence or proprietary notice.
+| # | What | Why | Steps |
+|---|---|---|---|
+| 1 | Install the CI workflow | CI cannot run until `.github/workflows/ci.yml` exists | `ci/README.md` (one minute in the browser) |
+| 2 | Resend account, API key and a verified sending domain | No e-mail can be sent without them | DEPLOYMENT.md §4 |
+| 3 | DNS records for the sending domain | Resend only sends from a verified domain | Added at the DNS host by whoever controls the domain |
+| 4 | Stripe test-mode secret key and webhook signing secret | Checkout has only been run against a local stub | DEPLOYMENT.md §5 |
+| 5 | Approval to create Railway services | Deployment is billable | DEPLOYMENT.md §1–3 |
+| 6 | GitHub read-only token (optional but recommended) | 60 → 5,000 requests an hour | DEPLOYMENT.md §6 |
+| 7 | GitHub OAuth app, LLM key (optional) | "Sign in with GitHub", AI-enriched reports | DEPLOYMENT.md §6 |
 
-## Before live payments
+Set secrets as service variables on the host. Do not paste them into chat or commit them.
 
-- [ ] Run the Stripe integration against Stripe's test environment and fix anything the mocks did not show
-- [ ] Validate prices and limits with prospective customers
-- [ ] Decide VAT / tax handling (Stripe Tax is not configured)
-- [ ] Only then set `ALLOW_LIVE_PAYMENTS=true` with a live key
+## Remaining steps before production
+
+1. Install the CI workflow and confirm the first run is green.
+2. Create the Railway resources and set the variables (DEPLOYMENT.md §1–3).
+3. Deploy; run `python -m app.cli doctor` on the `api` service; confirm the proxy check shows your own IP (§7).
+4. Verify the Resend domain; send the test e-mail; register a fresh account and confirm the e-mail arrives.
+5. Configure Stripe test mode; complete one test checkout and one cancellation end to end.
+6. Take a database export.
+7. Publish a privacy notice and terms; decide on a licence or proprietary notice.
+8. Keep live payments off until the Stripe test run, pricing validation and tax handling are done.
 
 ## Next engineering tasks
 
-- [ ] In-app plan upgrade/downgrade for existing subscribers (currently via the Stripe portal)
-- [ ] Billing emails (receipt, payment failed, cancellation confirmation)
-- [ ] Teammate invitations and seat limits
-- [ ] Committed Playwright end-to-end suite
-- [ ] Nonce-based Content-Security-Policy; multi-factor authentication
+- [ ] `.railway/railway.ts` (Railway's infrastructure-as-code) once the project exists
+- [ ] In-app plan change for existing subscribers; billing e-mails (receipt, payment failed)
+- [ ] Teammate invitations and seat limits; multi-factor authentication
+- [ ] Run the acceptance suite in CI
 - [ ] Dependencies from GitHub's SBOM endpoint; package-registry adoption data
 - [ ] Backtest the scoring model against known outcomes
 - [ ] Error tracking and metrics

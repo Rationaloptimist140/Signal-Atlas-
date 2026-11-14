@@ -11,6 +11,8 @@ Base path: `/api/v1` · Interactive reference: `/api/docs` (Swagger) and `/api/r
 
 API keys are read-only unless created with the `read write` scope, and can never call account-management endpoints (`/auth/*`, `/api-keys`, `/billing/*`, `/settings/*`, `/notifications`).
 
+`POST /auth/register` always answers `202 {"status": "accepted", ...}` and never signs in or reveals whether the address is already registered; sign in afterwards with `POST /auth/login`.
+
 ## Conventions
 
 * **Provenance** — intelligence objects include `data_source` (`live_github` | `demo_fixture`). Intelligence endpoints accept `source=auto|live|demo|all`; `auto` (default) returns live data when any exists, otherwise demo fixtures.
@@ -26,12 +28,12 @@ API keys are read-only unless created with the `read write` scope, and can never
 | 422 | `validation_error` | Invalid input; `fields` lists problems |
 | 423 | `account_locked` | Too many failed logins |
 | 429 | `rate_limited` | Honour `Retry-After` |
-| 503 | `github_rate_limited`, `github_oauth_not_configured` | Upstream limit or missing setup |
+| 503 | `github_rate_limited`, `github_oauth_not_configured`, `billing_not_configured`, `temporarily_unavailable` | Upstream limit, missing setup, or the rate-limit backend is unreachable (sensitive actions fail closed; retry shortly) |
 
 ## Endpoints
 
 ### Auth
-`GET /auth/providers` · `POST /auth/register` · `POST /auth/login` · `POST /auth/logout` · `POST /auth/logout-all` · `POST /auth/verify-email/request` · `POST /auth/verify-email/confirm` · `POST /auth/password-reset/request` · `POST /auth/password-reset/confirm` · `GET /auth/me` · `PATCH /auth/me` · `POST /auth/change-password` · `GET /auth/github/start?mode=connect|login` · `DELETE /auth/github`
+`GET /auth/providers` · `POST /auth/register` · `POST /auth/login` · `POST /auth/logout` · `POST /auth/logout-all` · `POST /auth/verify-email/request` · `POST /auth/verify-email/resend` · `POST /auth/verify-email/confirm` · `POST /auth/password-reset/request` · `POST /auth/password-reset/confirm` · `GET /auth/me` · `PATCH /auth/me` · `POST /auth/change-password` · `GET /auth/github/start?mode=connect|login` · `DELETE /auth/github`
 
 ### Repository Intelligence
 | Endpoint | Description |
@@ -82,6 +84,7 @@ A report's `content` contains `executive_summary`, `verified_facts` (numbered `F
 | `GET /billing/subscription` | Status (`pending`, `active`, `past_due`, `cancelled`, `expired`), interval, period dates, the plan whose limits apply now, and usage against limits |
 | `POST /billing/checkout` | Owner. `{"plan": "pro"|"business", "interval": "month"|"year"}` → `{"checkout_url"}` for hosted checkout. 503 `billing_not_configured` when no provider is set |
 | `POST /billing/cancel` · `POST /billing/resume` | Owner. Cancel at period end / undo |
+| `POST /billing/sync` | Admin. Re-reads the subscription from the provider; with `{"session_id": "cs_…"}` confirms a checkout session created for this workspace |
 | `POST /billing/portal` | Owner. Provider billing portal URL (card, invoices) |
 | `GET /billing/payments` | Payment history |
 | `POST /billing/webhooks/stripe` | Provider only. Signature-verified and idempotent |
@@ -90,7 +93,7 @@ A report's `content` contains `executive_summary`, `verified_facts` (numbered `F
 `GET /system/status` · `POST /system/demo/load` · `DELETE /system/demo` · `POST /system/discover` · `POST /system/recompute`
 
 ### Health
-`GET /health` · `GET /health/ready`
+`GET /health` · `GET /health/ready` (503 when the database or a configured Redis is unreachable)
 
 ## Example
 
