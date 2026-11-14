@@ -7,7 +7,9 @@
 Add a provider by implementing ``send``. Tokens are never logged in production.
 """
 
+import asyncio
 import html
+import uuid
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -25,7 +27,7 @@ class EmailMessage:
     subject: str
     text: str
     html: str
-    kind: str  # verify_email | password_reset
+    kind: str  # verify_email | password_reset | account_exists | test
     action_url: str | None = None
 
 
@@ -61,6 +63,7 @@ class ConsoleMailer:
 class ResendMailer:
     name = "resend"
     delivers = True
+    retry_delay = 0.6
 
     def __init__(self, settings: Settings, transport: httpx.AsyncBaseTransport | None = None):
         self._key = settings.resend_api_key or ""
@@ -72,17 +75,25 @@ class ResendMailer:
         payload: dict = {"from": self._from, "to": [message.to], "subject": message.subject, "text": message.text, "html": message.html}
         if self._reply_to:
             payload["reply_to"] = self._reply_to
-        try:
-            async with httpx.AsyncClient(timeout=15.0, transport=self._transport) as http:
-                resp = await http.post("https://api.resend.com/emails", headers={"Authorization": f"Bearer {self._key}"}, json=payload)
-        except httpx.HTTPError as exc:
-            log.error("email_send_failed", provider="resend", kind=message.kind, error=type(exc).__name__)
-            return "failed"
-        if resp.status_code >= 300:
-            log.error("email_send_failed", provider="resend", kind=message.kind, status=resp.status_code)
-            return "failed"
-        log.info("email_sent", provider="resend", kind=message.kind)
-        return "sent"
+        # One retry for transient failures (timeouts, 429, 5xx). The same Idempotency-Key makes the retry safe.
+        headers = {"Authorization": f"Bearer {self._key}", "Idempotency-Key": uuid.uuid4().hex}
+        for attempt in (1, 2):
+            status: int | str
+            try:
+                async with httpx.AsyncClient(timeout=15.0, transport=self._transport) as http:
+                    resp = await http.post("https://api.resend.com/emails", headers=headers, json=payload)
+                status = resp.status_code
+            except httpx.HTTPError as exc:
+                status = type(exc).__name__
+            if isinstance(status, int) and status < 300:
+                log.info("email_sent", provider="resend", kind=message.kind, attempt=attempt)
+                return "sent"
+            transient = not isinstance(status, int) or status == 429 or status >= 500
+            log.error("email_send_failed", provider="resend", kind=message.kind, status=status, attempt=attempt, will_retry=transient and attempt == 1)
+            if not transient or attempt == 2:
+                break
+            await asyncio.sleep(self.retry_delay)
+        return "failed"
 
 
 def get_mailer(settings: Settings | None = None) -> Mailer:
@@ -126,3 +137,17 @@ def password_reset_email(to: str, url: str, minutes: int) -> EmailMessage:
                    "We received a request to reset the password for this account.", "Choose a new password",
                    f"This link expires in {minutes} minutes and can be used once.",
                    "If you did not request this, ignore this email: your password stays unchanged.", url)
+
+
+def account_exists_email(to: str, login_url: str) -> EmailMessage:
+    """Sent instead of an error when someone registers with an address that already has an account."""
+    return _render(to, "account_exists", "You already have a Signal Atlas account", "You already have an account",
+                   "Someone, probably you, tried to create a Signal Atlas account with this email address, but one already exists. No changes were made.",
+                   "Sign in", "If you have forgotten your password, use 'Forgot password?' on the sign-in page.",
+                   "If this was not you, no action is needed: nobody can access your account without your password.", login_url)
+
+
+def test_email(to: str, app_url: str) -> EmailMessage:
+    return _render(to, "test", "Signal Atlas email delivery test", "Email delivery works",
+                   "This is a test message from the Signal Atlas configuration check. Receiving it confirms that the sending domain and API key are set up correctly.",
+                   "Open Signal Atlas", "This link is the application address and contains no token.", "Sent by `python -m app.cli doctor --send-test-email`.", app_url)

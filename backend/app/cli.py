@@ -1,6 +1,7 @@
 """Operational CLI: ``python -m app.cli <command>``.
 
 Commands: init-db | demo-load | demo-clear | discover [query] | sync <owner/name> | recompute | run-jobs
+          doctor [--send-test-email you@example.com]   check configuration and provider connectivity
 """
 
 import asyncio
@@ -25,6 +26,16 @@ async def _run(argv: list[str]) -> int:
             await conn.run_sync(Base.metadata.create_all)
         print("tables created")
         return 0
+    if command == "doctor":
+        from app.services import doctor
+
+        send_to = argv[argv.index("--send-test-email") + 1] if "--send-test-email" in argv and len(argv) > argv.index("--send-test-email") + 1 else None
+        checks = await doctor.run_checks(send_to)
+        for check in checks:
+            print(check.line())
+        failed = [c for c in checks if c.status == doctor.FAIL]
+        print(f"\n{len(failed)} failure(s), {sum(c.status == doctor.WARN for c in checks)} warning(s).")
+        return 1 if failed else 0
     async with get_sessionmaker()() as session:
         if command == "demo-load":
             print(await demo.load_demo(session))

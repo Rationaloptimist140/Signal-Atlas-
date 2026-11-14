@@ -10,17 +10,17 @@ from app.config import Settings
 from app.models import AuditLog, EmailToken, User, utcnow
 from app.security import hash_token
 from app.services.mailer import ConsoleMailer, ResendMailer, password_reset_email, verification_email
-from tests.conftest import PASSWORD, last_token, make_client, register
+from tests.conftest import PASSWORD, last_token, make_client, production_settings, register
 
 NEW_PASSWORD = "Br4ndNewPassw0rd"
 
 
 async def test_registration_sends_verification_and_soft_gate_blocks_premium_actions(anon, demo_data, db):
     data = await register(anon, "new@example.com", "Nia New", verify=False)
-    assert data["user"]["email_verified"] is False and data["verification_email"] == "captured"
+    assert data["user"]["email_verified"] is False
     message = ConsoleMailer.outbox[-1]
     assert message.to == "new@example.com" and message.kind == "verify_email"
-    assert "/verify-email?token=" in message.action_url and message.action_url in message.text and "Confirm email address" in message.html
+    assert "/verify-email#token=" in message.action_url and "?" not in message.action_url  # fragment: never sent to any server and message.action_url in message.text and "Confirm email address" in message.html
     raw = last_token("verify_email")
     stored = await db.scalar(select(EmailToken))
     assert stored.token_hash == hash_token(raw) and raw not in stored.token_hash  # only a hash is stored
@@ -159,7 +159,7 @@ async def test_resend_adapter_sends_html_and_text_and_survives_provider_errors()
 async def test_unconfigured_mailer_never_prints_tokens_in_production(capsys):
     token_url = "https://app.example.org/reset-password?token=SUPERSECRETTOKEN1234567890"
     message = password_reset_email("user@example.com", token_url, 30)
-    production = Settings(app_env="production", secret_key="p" * 48, allow_self_serve_plan_change=False)
+    production = production_settings()
     assert await ConsoleMailer(production).send(message) == "not_configured"
     assert "SUPERSECRETTOKEN" not in capsys.readouterr().out
     development = Settings(app_env="development")

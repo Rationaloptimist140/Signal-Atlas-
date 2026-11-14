@@ -31,10 +31,28 @@ class Principal:
 
 
 def client_ip(request: Request) -> str:
-    forwarded = request.headers.get("x-forwarded-for")
-    if forwarded:
-        return forwarded.split(",")[0].strip()[:64]
+    """The caller's address for rate limiting and audit.
+
+    X-Forwarded-For is only trusted from the right: each trusted proxy appends the address it saw, so
+    with N proxies in front of the API the client is the N-th entry from the end. Entries further left
+    are supplied by the client and can be forged, so they are never used.
+    """
+    hops = get_settings().trusted_proxy_hops
+    chain = [part.strip() for part in request.headers.get("x-forwarded-for", "").split(",") if part.strip()]
+    if hops > 0 and chain:
+        return chain[max(len(chain) - hops, 0)][:64]
     return (request.client.host if request.client else "unknown")[:64]
+
+
+async def enforce_limit(key: str, limit: int, window_seconds: int, message: str, *, sensitive: bool = True) -> None:
+    allowed, retry = await ratelimit.hit(key, limit, window_seconds, sensitive=sensitive)
+    if not allowed:
+        raise HTTPException(status_code=429, detail={"code": "rate_limited", "message": message}, headers={"Retry-After": str(retry)})
+
+
+async def public_rate_limit(request: Request) -> None:
+    """Per-IP ceiling for endpoints that need no authentication."""
+    await enforce_limit(f"public:{client_ip(request)}", 120, 60, "Too many requests. Slow down and retry shortly.", sensitive=False)
 
 
 def _extract_api_key(request: Request) -> str | None:
@@ -47,11 +65,6 @@ def _extract_api_key(request: Request) -> str | None:
     return None
 
 
-async def _too_many(retry_after: int) -> HTTPException:
-    return HTTPException(status_code=429, detail={"code": "rate_limited", "message": "Too many requests. Slow down and retry shortly."},
-                         headers={"Retry-After": str(retry_after)})
-
-
 async def _principal_from_api_key(request: Request, db: AsyncSession, raw_key: str) -> Principal:
     key = await db.scalar(select(ApiKey).where(ApiKey.key_hash == hash_token(raw_key)))
     if key is None or key.revoked_at is not None:
@@ -61,9 +74,7 @@ async def _principal_from_api_key(request: Request, db: AsyncSession, raw_key: s
         raise upgrade_required(plan, "api_access", "API access is not included in your current plan.")
     if request.method not in SAFE_METHODS and "write" not in key.scopes.split():
         raise HTTPException(status_code=403, detail={"code": "read_only_key", "message": "This API key is read-only."})
-    allowed, retry = await ratelimit.hit(f"key:{key.id}", plan.api_rate_per_minute)
-    if not allowed:
-        raise await _too_many(retry)
+    await enforce_limit(f"key:{key.id}", plan.api_rate_per_minute, 60, "Too many requests. Slow down and retry shortly.", sensitive=False)
     used = await record_usage(db, key.organisation_id, "api_requests")
     if plan.api_requests_per_month is not None and used > plan.api_requests_per_month:
         await db.commit()
@@ -89,9 +100,7 @@ async def _principal_from_session(request: Request, db: AsyncSession, token: str
         header = request.headers.get("x-csrf-token", "")
         if not header or not constant_time_equals(header, session.csrf_token):
             raise HTTPException(status_code=403, detail={"code": "csrf_failed", "message": "Missing or invalid CSRF token."})
-    allowed, retry = await ratelimit.hit(f"session:{session.id}", settings.rate_limit_per_minute)
-    if not allowed:
-        raise await _too_many(retry)
+    await enforce_limit(f"session:{session.id}", settings.rate_limit_per_minute, 60, "Too many requests. Slow down and retry shortly.", sensitive=False)
     return Principal(organisation_id=session.organisation_id, role=membership.role, via="session", user=user, session=session)
 
 
@@ -161,3 +170,8 @@ def verified_role(minimum: Role, *, session_only: bool = False):
 
 require_verified_analyst = verified_role(Role.ANALYST)
 require_verified_admin = verified_role(Role.ADMIN, session_only=True)
+
+
+async def limit_action(principal: Principal, action: str, limit: int, window_seconds: int) -> None:
+    """Per-organisation ceiling on sensitive account operations (password, keys, billing)."""
+    await enforce_limit(f"action:{action}:{principal.organisation_id}:{principal.user_id}", limit, window_seconds, "Too many attempts. Please wait before trying again.")

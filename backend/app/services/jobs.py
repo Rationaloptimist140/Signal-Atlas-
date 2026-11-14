@@ -18,6 +18,7 @@ from app.models import (
     CompetitorRepository,
     DataSource,
     DeveloperProfile,
+    EmailToken,
     GitHubAccount,
     IntelligenceReport,
     Job,
@@ -29,7 +30,7 @@ from app.models import (
     utcnow,
 )
 from app.security import decrypt_secret
-from app.services import ingestion, intelligence, trends
+from app.services import billing, ingestion, intelligence, trends
 from app.services.github_client import GitHubClient, GitHubRateLimited
 from app.services.reports import enrich_report
 
@@ -264,8 +265,11 @@ async def _retention(session: AsyncSession, payload: dict) -> dict:
     jobs = await session.execute(delete(Job).where(Job.status.in_(("succeeded", "failed")), Job.finished_at < now - dt.timedelta(days=14)))
     notes = await session.execute(delete(Notification).where(Notification.read_at.is_not(None), Notification.created_at < now - dt.timedelta(days=90)))
     scores = await intelligence.purge_old_scores(session, settings.snapshot_retention_days)
+    tokens = await session.execute(delete(EmailToken).where(EmailToken.expires_at < now - dt.timedelta(days=7)))
     await session.commit()
-    return {"snapshots": snapshots.rowcount, "audit_logs": audits.rowcount, "jobs": jobs.rowcount, "notifications": notes.rowcount, "scores": scores}
+    lapsed = await billing.expire_lapsed(session, now)
+    return {"snapshots": snapshots.rowcount, "audit_logs": audits.rowcount, "jobs": jobs.rowcount, "notifications": notes.rowcount, "scores": scores,
+            "email_tokens": tokens.rowcount, "subscriptions_expired": lapsed}
 
 
 async def notify_change_events(session: AsyncSession, repository_ids: list[int]) -> int:

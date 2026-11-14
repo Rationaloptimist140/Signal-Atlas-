@@ -188,7 +188,7 @@ async def test_demo_fixtures_can_be_cleared(client, demo_data):
 
 async def test_health_and_openapi(anon):
     assert (await anon.get("/health")).json()["status"] == "ok"
-    assert (await anon.get("/health/ready")).json() == {"status": "ready", "database": True}
+    assert (await anon.get("/health/ready")).json() == {"status": "ready", "database": True, "rate_limiting": {"backend": "memory", "healthy": True, "shared": False}}
     spec = (await anon.get("/api/openapi.json")).json()
     for path in ("/api/v1/repositories", "/api/v1/repositories/{repository_id}", "/api/v1/developers", "/api/v1/developers/{developer_id}", "/api/v1/trends",
                  "/api/v1/opportunities", "/api/v1/opportunities/{opportunity_id}", "/api/v1/reports/generate", "/api/v1/competitors", "/api/v1/watchlists", "/api/v1/dashboard"):
