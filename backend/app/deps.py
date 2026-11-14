@@ -139,10 +139,15 @@ async def require_platform_admin(principal: Principal = Depends(require_admin)) 
     """Instance-wide tools (demo fixtures, discovery, recompute) affect data shared by all tenants.
 
     In production only e-mails listed in PLATFORM_ADMIN_EMAILS may use them; in development any workspace admin can.
+    While e-mail verification is required the address must also be confirmed: sign-up does not prove ownership
+    of an address, so a listed e-mail alone must not grant instance-wide access to whoever registers it first.
     """
     settings = get_settings()
-    if settings.app_env == "production" and (principal.user is None or principal.user.email.lower() not in settings.platform_admins):
-        raise HTTPException(status_code=403, detail={"code": "platform_admin_required", "message": "This action is restricted to platform administrators."})
+    if settings.app_env == "production":
+        user = principal.user
+        listed = user is not None and user.email.lower() in settings.platform_admins
+        if not listed or (settings.email_verification_required and user.email_verified_at is None):
+            raise HTTPException(status_code=403, detail={"code": "platform_admin_required", "message": "This action is restricted to platform administrators."})
     return principal
 
 

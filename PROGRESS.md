@@ -1,10 +1,12 @@
 # Progress
 
-_Last updated: 14 November 2026 — session 3 (integration and deployment readiness, v0.3.0)._
+_Last updated: 14 November 2026 — session 4 (production deployment, v0.3.1)._
 
 ## Where things stand
 
-The application is complete and prepared for deployment. **It is not deployed, CI is not active on GitHub, and neither Resend nor Stripe has been exercised for real.** Those three items need access only the owner can give (see [TASKS.md](TASKS.md)).
+**The application is deployed on Railway and serving over HTTPS:** <https://web-production-e6e86402.up.railway.app>. It holds live GitHub data and passes the deployed-site journey for everything that does not need e-mail or payments.
+
+**It is not ready to launch.** No e-mail can be sent, so nobody can verify an address, and without a verified address reports, API keys and live GitHub requests stay locked. Card payments are not configured. CI has still never run on GitHub. Each of these needs something only the owner can supply (see [TASKS.md](TASKS.md)).
 
 How each area was verified:
 
@@ -18,19 +20,45 @@ How each area was verified:
 
 | Area | Local | Mock | Sandbox | Production |
 |---|:-:|:-:|:-:|:-:|
-| Intelligence features (repositories, developers, trends, opportunities, competitors, scoring) | ✅ | — | — | ❌ not deployed |
-| Accounts, sessions, soft verification gate, password reset | ✅ | — | — | ❌ |
-| Sign-up without account enumeration | ✅ | — | — | ❌ |
-| Rate limiting on Redis, failing closed | ✅ real Redis 7 | ✅ | — | ❌ |
-| Content-Security-Policy | ✅ real browser, zero violations | — | — | ❌ |
-| E-mail content, links, expiry, single use, limits | ✅ | ✅ Resend API mocked | **Blocked** — no Resend key or verified domain | ❌ |
-| **Real e-mail delivery** | — | — | **Blocked — never tested** | ❌ |
-| Stripe checkout, webhooks, renewal, failure, cancellation, refunds, history, entitlements | ✅ browser journey against the local stub | ✅ | **Blocked** — no Stripe test key | ❌ |
-| **Real Stripe test-mode checkout** | — | — | **Blocked — never tested** | ❌ |
-| GitHub sign-in (OAuth) | — | ✅ | **Blocked** — no OAuth app | ❌ |
-| AI report enrichment | — | ✅ | **Blocked** — no LLM key | ❌ |
-| CI on GitHub | ✅ every step run by hand | — | **Blocked** — Workflows permission | — |
-| Railway deployment | ✅ start commands, migrations, health checks and IPv4+IPv6 listening run by hand. **Docker images not built** (no Docker in the build environment) | — | **Blocked** — awaiting approval | ❌ |
+| Intelligence features (repositories, trends, opportunities, scoring) | ✅ | — | — | ✅ 234 live repositories, pages and profiles load |
+| Accounts, sessions, sign-out, CSRF, soft verification gate | ✅ | — | — | ✅ |
+| Sign-up and password-reset request without account enumeration | ✅ | — | — | ✅ |
+| Tenant isolation (one workspace cannot change another's data) | ✅ | — | — | ✅ |
+| Rate limiting on Redis | ✅ real Redis 7 | ✅ | — | ✅ shared Redis; sign-in limit returns 429 with `Retry-After` |
+| Rate limiting fails closed when Redis is down | ✅ real Redis 7 stopped mid-run | ✅ | — | Not tested (would take the live service down) |
+| Content-Security-Policy and security headers | ✅ | — | — | ✅ real browser, zero violations |
+| Database migrations | ✅ PostgreSQL 16 | — | — | ✅ `0001`→`0002` applied on first start; data kept across four redeploys |
+| Mobile layout (390px) | ✅ | — | — | ✅ six pages, no overflow |
+| E-mail content, links, expiry, single use, limits | ✅ | ✅ Resend API mocked | **Blocked** — no Resend key or verified domain | **Blocked** |
+| **Real e-mail delivery** | — | — | **Blocked — never tested** | **Blocked — never tested** |
+| Stripe checkout, webhooks, renewal, failure, cancellation, refunds, history, entitlements | ✅ browser journey against the local stub | ✅ | **Blocked** — no Stripe test key | **Blocked**; checkout refuses safely with "not configured", no plan change |
+| **Real Stripe test-mode checkout** | — | — | **Blocked — never tested** | **Blocked — never tested** |
+| Verified-only features on the live site (report generation, API keys, live GitHub search) | ✅ | — | — | **Blocked** — refusal confirmed, success path needs e-mail |
+| GitHub sign-in (OAuth) | — | ✅ | **Blocked** — no OAuth app | Not configured |
+| AI report enrichment | — | ✅ | **Blocked** — no LLM key | Not configured |
+| CI on GitHub | ✅ every step run by hand | — | **Blocked** — Workflows permission; zero runs | — |
+| Database export and restore | — | — | — | **Blocked** — no shell or database connection from the build environment; steps in DEPLOYMENT.md §8 |
+
+## Production deployment (session 4)
+
+| Item | Value |
+|---|---|
+| Public address | <https://web-production-e6e86402.up.railway.app> (HTTP redirects to HTTPS) |
+| Railway project | `signal-atlas`, environment `production` — new project; the three existing projects were not touched |
+| Services | `web` (Next.js, public), `api` (FastAPI, private network only), `Postgres`, `Redis` — both with volumes |
+| Not created | `worker`. Jobs run inline, so nothing runs on a timer (see Known limitations) |
+| Source | `main`, auto-deploy on push; `api` watches `/backend/**`, `web` watches `/frontend/**` |
+| Limits | 1 vCPU / 1 GB per app service |
+| Health checks | `api` `/health/ready` (database + Redis), `web` `/login` |
+| Configuration check | `python -m app.cli doctor`: 0 failures; warnings only for e-mail, payments, GitHub token, GitHub sign-in and AI (all not configured) |
+
+Both Docker images built and started first time. One setting was wrong and is corrected: `TRUSTED_PROXY_HOPS` must be `2` on Railway, not `1`. With `1` every visitor appeared to the API as the same Railway address and would have shared a single rate-limit allowance.
+
+**Deployed-site journey** (`e2e/production.mjs`, real browser, fresh account): 34 passed, 0 failed, 3 blocked. The blocked steps are e-mail verification, completing a password reset, and checkout through to cancellation.
+
+**Data:** 234 repositories from nine live GitHub searches; three more searches are still queued after GitHub's anonymous rate limit. No demonstration fixtures are loaded.
+
+**Test accounts left in the database** (all `@example.com`, unverified, Free): `persist-1794648557`, `e2e-prod-1794648968439`, `e2e-prod-other-1794648968439`, `e2e-prod-1794649035661`, `e2e-prod-other-1794649035661`, plus any from later runs of the journey. They can be deleted once a database connection is available.
 
 ## Verification performed in session 3
 
@@ -77,6 +105,9 @@ How each area was verified:
 | Production would start on weak settings other than the secret key | Low (found this session) | **Fixed.** Start-up refuses SQLite, non-https URLs, insecure cookies, demo seeding, an undecided rate-limit backend |
 | Refunds could not be matched on newer Stripe API versions | Low (found this session) | **Fixed** (payment-intent link plus a fallback); mock-tested only |
 
+| A listed platform-admin e-mail gave instance-wide tools to whoever registered that address first, verified or not | Medium (found in session 4) | **Fixed.** The address must be verified. `PLATFORM_ADMIN_EMAILS` is unset on the live deployment until e-mail works |
+| `TRUSTED_PROXY_HOPS=1` made all visitors share one per-IP allowance on Railway | Medium (found in session 4) | **Fixed** on the live deployment (`2`) and in the documentation |
+
 No critical or high-severity issue is open.
 
 ## Deployment preparation
@@ -92,7 +123,9 @@ Checked 14 November 2026: `flanuer.com` uses Porkbun nameservers; neither it nor
 
 ## Known limitations
 
-* The two Dockerfiles have never been built: the first Railway build will be their first. The commands inside them were each run by hand.
+* No `worker` service is deployed. Jobs run only as part of a request, so there is no daily re-sync and lapsed subscriptions are not expired automatically. Add it before taking payments.
+* Until e-mail is configured nobody can verify an address, so the platform-admin tools (discovery, recompute, status) are unavailable to everyone, including the owner.
+* The database has never been exported or restored.
 * Anonymous GitHub access allows about five full repository syncs an hour.
 * Changing plan while subscribed goes through Stripe's customer portal.
 * No teammate invitations or multi-factor authentication.
@@ -101,6 +134,7 @@ Checked 14 November 2026: `flanuer.com` uses Porkbun nameservers; neither it nor
 
 ## Change log
 
+* **Session 4 (v0.3.1)** — deployed to Railway; proxy setting corrected; platform-admin tools require a verified address; deployed-site journey added.
 * **Session 3 (v0.3.0)** — security hardening, Redis rate limiting, CSP, billing synchronisation, configuration checker, acceptance suite, deployment checklist.
 * **Session 2 (v0.2.0)** — e-mail verification, password reset, subscriptions, Stripe test-mode billing, landing and pricing pages.
 * **Session 1 (v0.1.0)** — intelligence platform, accounts, API, frontend.

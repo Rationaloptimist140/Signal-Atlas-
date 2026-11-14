@@ -1,6 +1,6 @@
 [project]
 name = "signal-atlas-backend"
-version = "0.3.0"
+version = "0.3.1"
 description = "SIGNAL ATLAS - open-source technology intelligence and commercial opportunity discovery API"
 requires-python = ">=3.11"
 dependencies = [

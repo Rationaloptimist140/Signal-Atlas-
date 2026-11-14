@@ -23,3 +23,13 @@ API_LOG=/tmp/sa_api.log npm run acceptance
 ```
 
 Set `STUB_URL=off` to skip the billing steps. Add `REDIS_URL=redis://localhost:6379/0` to the API to exercise the shared rate limiter.
+
+## Deployed site
+
+`production.mjs` runs a shorter journey against a real deployment with a fresh account:
+
+```bash
+BASE_URL=https://<web domain> node production.mjs
+```
+
+It checks HTTPS and security headers, pricing, sign-up, sign-in, the soft verification gate, live repository data, CSRF, tenant isolation, the sign-in rate limit, mobile layout and sign-out. Steps that need a delivered e-mail or a payment are printed as `BLOCKED`, never as passed. Set `EXPECT_EMAIL=1` and `EXPECT_BILLING=1` once Resend and Stripe are configured so that a missing provider fails the run. Each run leaves two unverified `@example.com` accounts behind.
