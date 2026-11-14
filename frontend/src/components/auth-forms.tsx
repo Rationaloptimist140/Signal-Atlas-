@@ -21,7 +21,8 @@ const OAUTH_ERRORS: Record<string, string> = {
   account_disabled: "This account is disabled.",
 };
 
-type Providers = { github_oauth: boolean; registration_open: boolean; github_scopes: string | null };
+type Providers = { github_oauth: boolean; registration_open: boolean; github_scopes: string | null; login_requires_verified_email?: boolean };
+const PENDING_EMAIL_KEY = "signal-atlas:pending-email";
 
 function safeNext(value: string | null): string {
   return value && value.startsWith("/") && !value.startsWith("//") ? value : "/overview";
@@ -58,6 +59,24 @@ export function LoginForm() {
   const [errors, setErrors] = useState<{ email?: string | null; password?: string | null }>({});
   const [formError, setFormError] = useState<string | null>(OAUTH_ERRORS[params.get("error") ?? ""] ?? null);
   const [busy, setBusy] = useState(false);
+  const [resent, setResent] = useState<string | null>(null);
+  const registered = params.get("registered");
+
+  useEffect(() => {
+    const pending = window.sessionStorage.getItem(PENDING_EMAIL_KEY);
+    if (registered && pending) setEmail(pending);
+  }, [registered]);
+
+  async function resendConfirmation() {
+    const invalid = validateEmail(email);
+    if (invalid) return setErrors({ email: invalid });
+    try {
+      const result = await api<{ message: string }>("/auth/verify-email/resend", { method: "POST", body: { email: email.trim() } });
+      setResent(result.message);
+    } catch (error) {
+      setFormError(errorMessage(error));
+    }
+  }
 
   async function onSubmit(event: FormEvent) {
     event.preventDefault();
@@ -69,6 +88,7 @@ export function LoginForm() {
     try {
       const me = await api<Me>("/auth/login", { method: "POST", body: { email: email.trim(), password } });
       setCsrfToken(me.csrf_token);
+      window.sessionStorage.removeItem(PENDING_EMAIL_KEY);
       window.location.assign(safeNext(params.get("next")));
     } catch (error) {
       setFormError(errorMessage(error));
@@ -81,14 +101,24 @@ export function LoginForm() {
       <h2 className="text-2xl font-semibold tracking-tight text-ink">Sign in</h2>
       <p className="mt-1.5 text-sm text-ink-muted">Access your intelligence terminal.</p>
       <form onSubmit={onSubmit} noValidate className="mt-8 space-y-4">
+        {registered && !formError && (
+          <Notice tone="success" title="Almost there.">
+            If that email address was not already registered, your account has been created and a confirmation email is on its way.{" "}
+            {registered === "confirm" ? "Confirm your email, then sign in." : "You can sign in now."}
+          </Notice>
+        )}
         {formError && <Notice tone="danger">{formError}</Notice>}
+        {resent && <Notice tone="success">{resent}</Notice>}
         <Field label="Email" htmlFor="email" error={errors.email}>
           <Input id="email" type="email" autoComplete="email" value={email} onChange={(e) => setEmail(e.target.value)} aria-invalid={!!errors.email} placeholder="you@company.com" />
         </Field>
         <Field label="Password" htmlFor="password" error={errors.password}>
           <Input id="password" type="password" autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} aria-invalid={!!errors.password} />
         </Field>
-        <p className="-mt-1 text-right text-xs"><Link href="/forgot-password" className="text-primary-bright hover:underline">Forgot password?</Link></p>
+        <p className="-mt-1 flex justify-between text-xs">
+          {providers?.login_requires_verified_email ? <button type="button" onClick={resendConfirmation} className="text-ink-muted hover:text-ink hover:underline">Resend confirmation email</button> : <span />}
+          <Link href="/forgot-password" className="text-primary-bright hover:underline">Forgot password?</Link>
+        </p>
         <Button type="submit" variant="primary" size="lg" className="w-full" loading={busy}>Sign in</Button>
       </form>
       <Divider />
@@ -115,11 +145,13 @@ export function RegisterForm() {
     setBusy(true);
     setFormError(null);
     try {
-      const me = await api<Me>("/auth/register", { method: "POST", body: { ...values, email: values.email.trim(), organisation_name: values.organisation_name.trim() || null } });
-      setCsrfToken(me.csrf_token);
+      // The API answers identically whether or not the address was already registered, and never signs in.
+      const result = await api<{ sign_in_requires_confirmation: boolean }>("/auth/register", { method: "POST", body: { ...values, email: values.email.trim(), organisation_name: values.organisation_name.trim() || null } });
+      window.sessionStorage.setItem(PENDING_EMAIL_KEY, values.email.trim());
       const plan = params.get("plan");
       const interval = params.get("interval") === "year" ? "year" : "month";
-      window.location.assign(plan === "pro" || plan === "business" ? `/settings?tab=billing&plan=${plan}&interval=${interval}` : "/overview");
+      const next = plan === "pro" || plan === "business" ? `&next=${encodeURIComponent(`/settings?tab=billing&plan=${plan}&interval=${interval}`)}` : "";
+      window.location.assign(`/login?registered=${result.sign_in_requires_confirmation ? "confirm" : "1"}${next}`);
     } catch (error) {
       if (error instanceof ApiError && error.detail.fields?.length) {
         setErrors(Object.fromEntries(error.detail.fields.map((f) => [f.field, f.message])));
@@ -208,13 +240,21 @@ export function ForgotPasswordForm() {
   );
 }
 
-/** Reads the single-use token from the URL once, then removes it from the address bar and browser history. */
-function useUrlToken(): string | null {
+/**
+ * Reads the single-use token once, then removes it from the address bar and browser history.
+ * Links carry it in the URL fragment (#token=...), which browsers never send to a server; the query
+ * form (?token=...) is still accepted. `undefined` means "not read yet" (first render and SSR).
+ */
+function useUrlToken(): string | null | undefined {
   const params = useSearchParams();
-  const [token] = useState(() => params.get("token"));
+  const [token, setToken] = useState<string | null | undefined>(undefined);
   useEffect(() => {
-    if (token && typeof window !== "undefined") window.history.replaceState(null, "", window.location.pathname);
-  }, [token]);
+    const fromHash = new URLSearchParams(window.location.hash.replace(/^#/, "")).get("token");
+    const found = fromHash ?? params.get("token");
+    setToken(found);
+    if (found) window.history.replaceState(null, "", window.location.pathname);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- read exactly once on mount
+  }, []);
   return token;
 }
 
@@ -245,6 +285,7 @@ export function ResetPasswordForm() {
     }
   }
 
+  if (token === undefined) return null;
   if (!token) {
     return <div className="space-y-4"><Notice tone="danger" title="This reset link is incomplete.">Request a new one.</Notice><Link href="/forgot-password" className="text-sm font-medium text-primary-bright hover:underline">Request a reset link</Link></div>;
   }
@@ -270,12 +311,13 @@ export function ResetPasswordForm() {
 
 export function VerifyEmailPanel() {
   const token = useUrlToken();
-  const [state, setState] = useState<"working" | "verified" | "failed" | "missing">(token ? "working" : "missing");
+  const [state, setState] = useState<"working" | "verified" | "failed" | "missing">("working");
   const [message, setMessage] = useState<string | null>(null);
   const started = useRef(false);
 
   useEffect(() => {
-    if (!token || started.current) return;
+    if (token === undefined || started.current) return;
+    if (token === null) return setState("missing");
     started.current = true; // the token is single-use: never send it twice (React strict mode runs effects twice)
     api("/auth/verify-email/confirm", { method: "POST", body: { token } })
       .then(() => setState("verified"))

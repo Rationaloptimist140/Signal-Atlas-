@@ -3,6 +3,7 @@ import { api, ApiError, buildUrl, errorMessage, setCsrfToken, UPGRADE_EVENT } fr
 import { categoryLabel, formatCompact, formatNumber, scoreTone, timeAgo, titleCase } from "@/lib/utils";
 import { normaliseRepoFullName, validateEmail, validatePassword, validateRepoFullName, validateRequired, validateWeights } from "@/lib/validation";
 import { layoutGraph, type GraphNode } from "@/components/ecosystem-map";
+import { buildCsp } from "@/middleware";
 import { mockApi } from "@/test/setup";
 
 describe("formatting", () => {
@@ -96,6 +97,23 @@ describe("api client", () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("<html>Bad gateway</html>", { status: 502 })));
     await expect(api("/dashboard")).rejects.toMatchObject({ status: 502, code: "server_unavailable" });
     expect(errorMessage("weird")).toBe("Something went wrong.");
+  });
+});
+
+describe("content security policy", () => {
+  it("allows only nonce-authorised scripts in production and nothing from third-party origins except GitHub avatars", () => {
+    const csp = buildCsp("abc123", false);
+    const directives = Object.fromEntries(csp.split("; ").map((d) => [d.split(" ")[0], d.split(" ").slice(1)]));
+    expect(directives["script-src"]).toEqual(["'self'", "'nonce-abc123'", "'strict-dynamic'"]);
+    expect(csp).not.toMatch(/unsafe-eval|\*/);
+    expect(directives["style-src"]).toEqual(["'self'", "'unsafe-inline'"]); // documented exception: inline style attributes
+    expect(directives["img-src"]).toEqual(["'self'", "data:", "https://avatars.githubusercontent.com"]);
+    expect(directives["connect-src"]).toEqual(["'self'"]);
+    expect(directives["frame-ancestors"]).toEqual(["'none'"]);
+    expect(directives["object-src"]).toEqual(["'none'"]);
+    expect(directives["form-action"]).toEqual(["'self'"]);
+    expect(directives["base-uri"]).toEqual(["'self'"]);
+    expect(buildCsp("n", true)).toContain("'unsafe-eval'"); // development only (React refresh)
   });
 });
 

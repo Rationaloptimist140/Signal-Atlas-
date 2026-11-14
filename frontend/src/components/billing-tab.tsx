@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api, errorMessage } from "@/lib/api";
 import { useApi, useSession } from "@/lib/session";
 import type { PaymentRow, PlanCatalogue, SubscriptionInfo } from "@/lib/types";
@@ -15,7 +15,7 @@ const STATUS_META: Record<string, { label: string; tone: "success" | "warning" |
   cancelled: { label: "Cancels at period end", tone: "warning" }, expired: { label: "Ended", tone: "neutral" },
 };
 
-export function BillingTab({ checkoutParam, initialPlan, initialInterval }: { checkoutParam?: string | null; initialPlan?: string | null; initialInterval?: Interval }) {
+export function BillingTab({ checkoutParam, checkoutSessionId, initialPlan, initialInterval }: { checkoutParam?: string | null; checkoutSessionId?: string | null; initialPlan?: string | null; initialInterval?: Interval }) {
   const { me, refresh } = useSession();
   const { data: catalogue } = useApi<PlanCatalogue>("/billing/plans");
   const { data: sub, error, mutate } = useApi<SubscriptionInfo>("/billing/subscription", undefined, { refreshInterval: checkoutParam === "success" ? 4000 : 0 });
@@ -26,6 +26,16 @@ export function BillingTab({ checkoutParam, initialPlan, initialInterval }: { ch
       : checkoutParam === "cancelled" ? { tone: "accent", text: "Checkout was cancelled. No charge was made." } : null);
   const [busy, setBusy] = useState<string | null>(null);
   const isOwner = me?.role === "owner";
+  const synced = useRef(false);
+
+  // Back from hosted checkout: ask the API to confirm the session with the provider straight away rather
+  // than waiting for the webhook. Failure is harmless - the webhook and the polling above still apply.
+  useEffect(() => {
+    if (checkoutParam !== "success" || synced.current || !me) return;
+    synced.current = true;
+    api("/billing/sync", { method: "POST", body: { session_id: checkoutSessionId ?? null } }).then(() => Promise.all([mutate(), refresh()])).catch(() => undefined);
+  }, [checkoutParam, checkoutSessionId, me, mutate, refresh]);
+
   const billing = sub?.billing ?? catalogue?.billing;
   const canBuy = !!billing && (billing.checkout_available || billing.self_serve_plan_change);
   const limit = (value: number | null) => (value === null ? "Unlimited" : formatNumber(value));

@@ -196,9 +196,12 @@ describe("authentication forms", () => {
     expect(screen.getByText(/Never repository write access/)).toBeInTheDocument();
   });
 
-  it("enforces the password policy on registration and maps API field errors", async () => {
+  it("enforces the password policy on registration, then hands over to sign-in without revealing whether the address existed", async () => {
+    const assign = vi.fn();
+    Object.defineProperty(window, "location", { value: { ...window.location, assign, pathname: "/register", hash: "" }, writable: true });
+    navigationState.search = new URLSearchParams("plan=pro&interval=year");
     const calls = mockApi({ "/auth/providers": { body: { github_oauth: false, registration_open: true, github_scopes: null } },
-      "/auth/register": { status: 409, body: { error: { code: "email_taken", message: "An account with this email already exists." } } } });
+      "/auth/register": { status: 202, body: { status: "accepted", message: "If this email address is not already registered…", delivery_configured: false, sign_in_requires_confirmation: false } } });
     render(<Providers><RegisterForm /></Providers>);
     await userEvent.type(screen.getByLabelText("Your name"), "Alice");
     await userEvent.type(screen.getByLabelText("Work email"), "alice@example.com");
@@ -209,7 +212,20 @@ describe("authentication forms", () => {
     await userEvent.clear(screen.getByLabelText("Password"));
     await userEvent.type(screen.getByLabelText("Password"), "Str0ngPassw0rd!");
     await userEvent.click(screen.getByRole("button", { name: "Create account" }));
-    expect(await screen.findByText("An account with this email already exists.")).toBeInTheDocument();
+    await waitFor(() => expect(assign).toHaveBeenCalledWith("/login?registered=1&next=%2Fsettings%3Ftab%3Dbilling%26plan%3Dpro%26interval%3Dyear"));
+    expect(window.sessionStorage.getItem("signal-atlas:pending-email")).toBe("alice@example.com");
+  });
+
+  it("greets a new sign-up on the sign-in page with a neutral message and the email prefilled", async () => {
+    navigationState.search = new URLSearchParams("registered=1");
+    window.sessionStorage.setItem("signal-atlas:pending-email", "alice@example.com");
+    mockApi({ "/auth/providers": { body: { github_oauth: false, registration_open: true, github_scopes: null, login_requires_verified_email: true } },
+      "/auth/verify-email/resend": { status: 202, body: { status: "accepted", message: "If that address has an unconfirmed account, a new confirmation email has been sent." } } });
+    render(<Providers><LoginForm /></Providers>);
+    expect(await screen.findByText(/If that email address was not already registered/)).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByLabelText("Email")).toHaveValue("alice@example.com"));
+    await userEvent.click(await screen.findByRole("button", { name: "Resend confirmation email" }));
+    expect(await screen.findByText(/a new confirmation email has been sent/)).toBeInTheDocument();
   });
 });
 

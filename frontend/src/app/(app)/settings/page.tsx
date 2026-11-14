@@ -16,7 +16,7 @@ type Feedback = { tone: "success" | "danger" | "accent" | "warning"; text: strin
 type OrgData = { organisation: { name: string; slug: string; created_at: string }; members: { id: number; email: string; full_name: string; role: string }[];
   integrations: { key: string; name: string; configured: boolean; detail: string; env: string[] }[] };
 type Scoring = { weights: Record<string, number>; defaults: Record<string, number>; labels: Record<string, string>; custom: boolean; editable: boolean };
-type SystemStatus = { jobs: Record<string, number>; live_repositories: number; demo_repositories: number; jobs_inline: boolean; recent_jobs: { id: number; job_type: string; status: string; attempts: number; finished_at: string | null; last_error: string | null }[] };
+type SystemStatus = { client_ip_as_seen: string; forwarded_for_entries: number; rate_limiting: { backend: string; healthy: boolean; shared: boolean }; jobs: Record<string, number>; live_repositories: number; demo_repositories: number; jobs_inline: boolean; recent_jobs: { id: number; job_type: string; status: string; attempts: number; finished_at: string | null; last_error: string | null }[] };
 
 const GITHUB_MESSAGES: Record<string, Feedback> = {
   connected: { tone: "success", text: "GitHub account connected with read-only identity scopes." },
@@ -266,6 +266,16 @@ function DataTab() {
             <tr key={job.id}><Td className="num text-xs text-ink">{job.job_type}</Td><Td><Badge tone={job.status === "succeeded" ? "success" : job.status === "failed" ? "danger" : "accent"}>{job.status}</Badge></Td>
               <Td className="num text-xs text-ink-muted">{job.attempts}</Td><Td className="text-xs text-ink-muted">{job.finished_at ? timeAgo(job.finished_at) : "—"}</Td><Td className="max-w-xs truncate text-xs text-ink-faint">{job.last_error ?? ""}</Td></tr>))}</tbody></table></div>
           : <p className="p-5 text-sm text-ink-muted">No jobs have run yet.</p>}</Card>
+      {data && (
+        <Card><CardHeader title="Rate limiting and proxy check" description="Operational detail for administrators" />
+          <dl className="grid gap-4 p-5 text-sm sm:grid-cols-3">
+            <div><dt className="text-xs text-ink-faint">Limiter backend</dt><dd className="mt-0.5 text-ink">{data.rate_limiting.backend === "redis" ? "Redis (shared across instances)" : "In-memory (single instance only)"} <Badge tone={data.rate_limiting.healthy ? "success" : "danger"} className="ml-1">{data.rate_limiting.healthy ? "Healthy" : "Unreachable"}</Badge></dd></div>
+            <div><dt className="text-xs text-ink-faint">Your address as seen by the API</dt><dd className="num mt-0.5 text-ink">{data.client_ip_as_seen}</dd></div>
+            <div><dt className="text-xs text-ink-faint">Forwarded-for entries received</dt><dd className="num mt-0.5 text-ink">{data.forwarded_for_entries}</dd></div>
+          </dl>
+          <div className="px-5 pb-5"><Notice>After deploying, the address shown must be your own public IP. If it is a private or shared address, adjust <code className="num">TRUSTED_PROXY_HOPS</code>; per-IP limits depend on it.</Notice></div>
+        </Card>
+      )}
     </div>
   );
 }
@@ -283,7 +293,7 @@ function SettingsContent() {
       {tab === "profile" && <ProfileTab />}
       {tab === "integrations" && <IntegrationsTab githubParam={githubParam} />}
       {tab === "scoring" && <ScoringTab />}
-      {tab === "billing" && <BillingTab checkoutParam={params.get("checkout")} initialPlan={params.get("plan")} initialInterval={params.get("interval") === "year" ? "year" : "month"} />}
+      {tab === "billing" && <BillingTab checkoutParam={params.get("checkout")} checkoutSessionId={params.get("session_id")} initialPlan={params.get("plan")} initialInterval={params.get("interval") === "year" ? "year" : "month"} />}
       {tab === "workspace" && <WorkspaceTab />}
       {tab === "data" && <DataTab />}
     </div>
